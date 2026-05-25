@@ -5,7 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-05-26
+
+### Added
+
+#### 阶段二核心功能
+- **soft_transform 工具**：实现 KD-Tree 软选择变形，支持 5 种衰减函数（LINEAR/INVERSE/CONSTANT/GAUSSIAN/ROOT）和 3 种变换类型（TRANSLATE/ROTATE/SCALE）
+- **curve_deform 工具**：基于 Curve 修改器的曲线变形功能
+- **shrinkwrap 工具**：基于 Shrinkwrap 修改器的收缩包裹功能
+
+#### 阶段三核心功能
+- **事件通知系统**（`core/events.py`）：
+  - EventBus 事件总线，支持多监听器订阅同一事件
+  - EventThrottle 事件节流器，支持节流和防抖策略
+  - BlenderEventHandlers，与 Blender app.handlers 集成
+  - 10+ 种事件类型（OBJECT_ADDED/REMOVED/MODIFIED/SCENE_CHANGED 等）
+
+- **性能优化**（`core/state.py`）：
+  - LRU 缓存策略（CacheStrategy）
+  - 采样哈希计算（默认 10% 顶点采样）
+  - 0.5秒 TTL 缓存有效期
+  - struct 浮点数打包优化哈希计算
+
+- **StateManager 增强**：
+  - 对象级网格哈希计算和对比
+  - 增量变更检测
+  - 版本号管理和变更日志
+
+#### 项目文件
+- `core/events.py`：完整的事件通知系统实现
+- 更新 `core/__init__.py`：导出新增的事件系统模块
+
+### Changed
+
+- 更新 `core/adapter.py`：新增 soft_transform、curve_deform、shrinkwrap 方法
+- 更新 `core/state.py`：新增性能优化、缓存策略、采样哈希
+- 更新 `PROGRESS.md`：版本升级到 v2.0，阶段二和三标记为完成
+- 更新 `开发计划.md`：版本升级到 v1.5，阶段二和三任务标记为完成
+
+## [0.1.0] - 2026-05-26
 
 ### Added
 
