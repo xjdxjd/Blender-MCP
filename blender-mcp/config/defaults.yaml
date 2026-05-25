@@ -1,0 +1,47 @@
+server:
+  host: "127.0.0.1"
+  port: 8765
+  ws_max_message_size: 10485760
+  ws_ping_interval: 15
+  ws_ping_timeout: 10
+  ws_max_missed_heartbeats: 3
+  ws_graceful_close_timeout: 5
+
+blender:
+  plugin_auto_connect: false
+  reconnect_max_retries: 5
+  reconnect_base_delay: 1.0
+  reconnect_max_delay: 30.0
+  reconnect_backoff_multiplier: 2.0
+
+logging:
+  level: "INFO"
+  dir: "./logs"
+  max_file_size_mb: 10
+  backup_count: 5
+  audit_retention_days: 30
+
+security:
+  allowed_paths:
+    - "~/blender-projects/"
+    - "~/Downloads/"
+    - "~/Desktop/"
+    - "/tmp/blender-mcp/"
+  max_file_size_mb: 500
+  enable_audit_log: true
+  max_message_size_mb: 10
+
+limits:
+  max_objects_per_scene: 1000
+  max_export_file_size_mb: 500
+  operation_timeout_seconds: 60
+  rate_limit_per_second: 10
+  rate_limit_burst: 20
+
+tolerance:
+  vertex_merge_distance: 0.0001
+  position_snap_precision: 0.001
+  angle_comparison_epsilon: 0.0001
+  normal_comparison_dot: 0.9999
+  stl_export_precision: 6
+  dimension_comparison_tolerance: 0.01

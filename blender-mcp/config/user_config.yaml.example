@@ -1,0 +1,26 @@
+# Blender MCP 配置文件示例
+# 复制为 config.yaml 并根据需要修改
+
+server:
+  host: "127.0.0.1"
+  port: 8765
+  ws_max_message_size: 10485760
+  ws_ping_interval: 15
+  ws_ping_timeout: 10
+  ws_max_missed_heartbeats: 3
+
+blender:
+  plugin_auto_connect: false
+
+logging:
+  level: "INFO"
+  dir: "./logs"
+
+security:
+  allowed_paths:
+    - "~/blender-projects/"
+    - "~/Downloads/"
+    - "~/Desktop/"
+
+limits:
+  max_objects_per_scene: 1000
