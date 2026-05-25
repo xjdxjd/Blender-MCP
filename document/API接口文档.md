@@ -1188,7 +1188,9 @@ const exportResult = await mcp.call({
 });
 ```
 
-### 示例 4：使用变形与雕刻工具创建"包子小人"
+### 示例 4：使用变形与雕刻工具创建复杂形象
+
+> **说明**：本示例展示变形与雕刻工具的通用建模流程，以"包子小人"为例演示工具的组合使用方式。同样的工具组合可应用于任何自然语言描述的复杂形象——从卡通角色到工业造型，从艺术摆件到功能性零件，核心流程一致：创建基础几何体 → 变形塑造大形 → 雕刻添加细节 → 平滑过渡 → 检查导出。
 
 ```javascript
 // 1. 创建球体作为包子身体
@@ -1357,6 +1359,40 @@ const exportResult = await mcp.call({
 
 console.log("包子小人已导出至:", exportResult.filepath);
 ```
+
+#### 其他形象建模思路
+
+以下简要列出几个不同风格形象的建模步骤概述，展示变形与雕刻工具的通用性：
+
+**思路 1：卡通猫咪摆件**
+
+1. `create_object` 创建球体（猫头）和椭球体（身体）
+2. `mesh_sculpt`（inflate）让头部更圆润
+3. `simple_deform`（taper）塑造竖起耳朵的锥形
+4. `create_object` 创建细圆柱体作为尾巴，`curve_deform` 沿曲线弯曲实现蜷缩效果
+5. `soft_transform` 调整四肢姿态
+6. `mesh_sculpt`（smooth）整体平滑过渡
+7. `check_model` + `export_model` 检查并导出
+
+**思路 2：齿轮杯垫**
+
+1. `create_object` 创建圆柱体作为杯垫主体
+2. `create_object` 创建多个小立方体作为齿，环形排列后 `modify_mesh`（boolean_union）合并
+3. `create_object` 创建六角柱体，`modify_mesh`（boolean_difference）切割中心凹槽
+4. `subdivide_mesh` 增加顶点密度
+5. `mesh_sculpt`（flatten）确保底面平整
+6. `check_model` + `export_model` 检查并导出
+
+**思路 3：仿古花瓶**
+
+1. `create_object` 创建圆柱体作为坯体
+2. `simple_deform`（taper）在颈部收窄、腹部膨胀，形成"细颈宽肚"轮廓
+3. `subdivide_mesh` 细分增加可编辑顶点
+4. `mesh_sculpt`（inflate）在瓶身凸起处塑造浮雕纹理
+5. `mesh_sculpt`（pinch）在浮雕边缘收拢形成锐利纹路
+6. `soft_transform` 微调瓶身曲线流畅度
+7. `mesh_sculpt`（smooth）让浮雕与瓶身自然过渡
+8. `check_model` + `export_model` 检查并导出
 
 ---
 
