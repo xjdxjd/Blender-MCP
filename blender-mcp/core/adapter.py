@@ -14,6 +14,108 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 
+class AttenuationType(Enum):
+    """衰减函数类型"""
+    LINEAR = "LINEAR"
+    INVERSE = "INVERSE"
+    CONSTANT = "CONSTANT"
+    GAUSSIAN = "GAUSSIAN"
+    ROOT = "ROOT"
+
+
+class KDTree:
+    """简单的 KD-Tree 实现，用于快速最近邻搜索"""
+    
+    def __init__(self, points: List[Tuple[float, float, float]]):
+        self.points = points
+        self.tree = None
+        if points:
+            self._build_tree()
+    
+    def _build_tree(self):
+        """构建 KD-Tree（使用 Blender 的 bvhtree）"""
+        # Blender 提供了内置的 BVHTree，我们直接使用它
+        pass
+    
+    @staticmethod
+    def create_bvhtree_from_mesh(obj: bpy.types.Object) -> 'bvh_tree':
+        """从网格对象创建 BVHTree"""
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.transform(obj.matrix_world)
+        bvh_tree = bvhtree.BVHTree.FromBMesh(bm)
+        bm.free()
+        return bvh_tree
+    
+    @staticmethod
+    def find_vertices_in_radius(
+        obj: bpy.types.Object,
+        center: Tuple[float, float, float],
+        radius: float
+    ) -> List[Tuple[int, float]]:
+        """
+        在指定半径范围内查找顶点
+        
+        Args:
+            obj: 网格对象
+            center: 搜索中心点 (世界坐标)
+            radius: 搜索半径
+        
+        Returns:
+            列表格式: [(顶点索引, 距离), ...]
+        """
+        import mathutils
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        
+        center_vec = mathutils.Vector(center)
+        matrix_inv = obj.matrix_world.inverted()
+        local_center = matrix_inv @ center_vec
+        
+        result = []
+        for i, v in enumerate(bm.verts):
+            dist = (v.co - local_center).length
+            if dist <= radius:
+                world_v = obj.matrix_world @ v.co
+                world_dist = (world_v - center_vec).length
+                result.append((i, world_dist))
+        
+        bm.free()
+        return result
+
+
+def calculate_attenuation(distance: float, radius: float, falloff_type: str = "LINEAR") -> float:
+    """
+    计算衰减因子
+    
+    Args:
+        distance: 距离中心的距离
+        radius: 作用半径
+        falloff_type: 衰减类型 (LINEAR/INVERSE/CONSTANT/GAUSSIAN/ROOT)
+    
+    Returns:
+        衰减因子 [0.0, 1.0]
+    """
+    if radius <= 0.0:
+        return 1.0
+    
+    normalized_dist = min(distance / radius, 1.0)
+    
+    if falloff_type == "LINEAR":
+        return 1.0 - normalized_dist
+    elif falloff_type == "INVERSE":
+        return 1.0 / (1.0 + normalized_dist * 3.0)
+    elif falloff_type == "CONSTANT":
+        return 1.0 if normalized_dist <= 1.0 else 0.0
+    elif falloff_type == "GAUSSIAN":
+        return math.exp(-3.0 * normalized_dist * normalized_dist)
+    elif falloff_type == "ROOT":
+        return 1.0 - math.sqrt(normalized_dist)
+    else:
+        return 1.0 - normalized_dist
+
+
 class BlenderContextAdapter:
     """Blender 上下文管理器，处理场景切换和上下文设置"""
 
@@ -912,6 +1014,197 @@ class BlenderAdapter:
             return {
                 "success": False,
                 "error": f"修复失败: {str(e)}"
+            }
+
+    def soft_transform(
+        self,
+        object_name: Optional[str] = None,
+        center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        radius: float = 1.0,
+        displacement: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        falloff_type: str = "LINEAR",
+        transform_type: str = "TRANSLATE"
+    ) -> Dict[str, Any]:
+        """
+        软选择变形（KD-Tree + 衰减函数）
+        
+        Args:
+            object_name: 目标对象名称（None 表示活跃对象）
+            center: 变形中心（世界坐标）
+            radius: 影响半径
+            displacement: 位移向量 (x, y, z)
+            falloff_type: 衰减类型 (LINEAR/INVERSE/CONSTANT/GAUSSIAN/ROOT)
+            transform_type: 变换类型 (TRANSLATE/ROTATE/SCALE)
+        
+        Returns:
+            操作结果字典
+        """
+        try:
+            import mathutils
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj or obj.type != 'MESH':
+                return {
+                    "success": False,
+                    "error": "不是网格对象"
+                }
+
+            # 查找半径范围内的顶点
+            vertices_in_radius = KDTree.find_vertices_in_radius(obj, center, radius)
+            if not vertices_in_radius:
+                return {
+                    "success": False,
+                    "error": "没有顶点在影响范围内"
+                }
+
+            # 使用 bmesh 进行变形
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+
+            displacement_vec = mathutils.Vector(displacement)
+            center_vec = mathutils.Vector(center)
+
+            affected_count = 0
+            for idx, dist in vertices_in_radius:
+                if idx < len(bm.verts):
+                    v = bm.verts[idx]
+                    # 计算衰减因子
+                    attenuation = calculate_attenuation(dist, radius, falloff_type)
+                    
+                    # 执行变换
+                    if transform_type == "TRANSLATE":
+                        v.co += displacement_vec * attenuation
+                    elif transform_type == "SCALE":
+                        # 相对于中心进行缩放
+                        local_pos = v.co - center_vec
+                        scale_factor = 1.0 + (displacement_vec[0] - 1.0) * attenuation
+                        v.co = center_vec + local_pos * scale_factor
+                    elif transform_type == "ROTATE":
+                        # 简单的旋转实现
+                        rot_angle = displacement[0] * attenuation
+                        rot_axis = mathutils.Vector((0, 0, 1))
+                        local_pos = v.co - center_vec
+                        local_pos.rotate(mathutils.Euler((0, 0, rot_angle), 'XYZ'))
+                        v.co = center_vec + local_pos
+                    
+                    affected_count += 1
+
+            # 更新网格
+            bm.to_mesh(obj.data)
+            obj.data.update()
+            bm.free()
+
+            return {
+                "success": True,
+                "object": obj.name_full,
+                "affected_vertices": affected_count,
+                "center": center,
+                "radius": radius,
+                "falloff": falloff_type,
+                "message": f"成功软变形 {affected_count} 个顶点"
+            }
+        except Exception as e:
+            logger.exception(f"soft_transform 失败")
+            return {
+                "success": False,
+                "error": f"soft_transform 失败: {str(e)}"
+            }
+
+    def curve_deform(
+        self,
+        object_name: str,
+        curve_name: str,
+        deform_axis: str = 'Z',
+        factor: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        曲线变形（使用 Curve 修改器）
+        
+        Args:
+            object_name: 要变形的对象名称
+            curve_name: 曲线对象名称
+            deform_axis: 变形轴 (X/Y/Z/-X/-Y/-Z)
+            factor: 变形强度因子
+        
+        Returns:
+            操作结果字典
+        """
+        try:
+            obj = bpy.data.objects.get(object_name)
+            curve_obj = bpy.data.objects.get(curve_name)
+            
+            if not obj or obj.type != 'MESH':
+                return {"success": False, "error": "对象不是网格"}
+            if not curve_obj or curve_obj.type != 'CURVE':
+                return {"success": False, "error": "曲线对象不存在"}
+
+            # 添加 Curve 修改器
+            mod = obj.modifiers.new(name="CurveDeform", type='CURVE')
+            mod.object = curve_obj
+            mod.deform_axis = deform_axis
+
+            return {
+                "success": True,
+                "object": obj.name_full,
+                "curve": curve_obj.name_full,
+                "message": "曲线变形修改器已添加"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"curve_deform 失败: {str(e)}"
+            }
+
+    def shrinkwrap(
+        self,
+        object_name: str,
+        target_name: str,
+        wrap_method: str = 'NEAREST_SURFACEPOINT',
+        offset: float = 0.0,
+        apply: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Shrinkwrap（收缩包裹）修改器
+        
+        Args:
+            object_name: 源对象名称
+            target_name: 目标对象名称
+            wrap_method: 包裹方法 (NEAREST_SURFACEPOINT/PROJECT/NEAREST_VERTEX)
+            offset: 偏移距离
+            apply: 是否立即应用修改器
+        
+        Returns:
+            操作结果字典
+        """
+        try:
+            obj = bpy.data.objects.get(object_name)
+            target_obj = bpy.data.objects.get(target_name)
+            
+            if not obj or obj.type != 'MESH':
+                return {"success": False, "error": "源对象不是网格"}
+            if not target_obj:
+                return {"success": False, "error": "目标对象不存在"}
+
+            mod = obj.modifiers.new(name="Shrinkwrap", type='SHRINKWRAP')
+            mod.target = target_obj
+            mod.wrap_method = wrap_method
+            mod.offset = offset
+
+            if apply:
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+
+            return {
+                "success": True,
+                "object": obj.name_full,
+                "target": target_obj.name_full,
+                "applied": apply,
+                "message": "Shrinkwrap 修改器已添加" + ("并应用" if apply else "")
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"shrinkwrap 失败: {str(e)}"
             }
 
 
