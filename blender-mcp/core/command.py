@@ -90,6 +90,88 @@ class CommandHandler:
                 "error": str(e)
             }
 
+    # === modify_mesh 工具 ===
+    def handle_modify_mesh_boolean(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 modify_mesh_boolean 命令"""
+        return self._adapter.modify_mesh_boolean(
+            target_name=params.get("target_name"),
+            operation=params.get("operation", "UNION"),
+            object_name=params.get("object_name"),
+            delete_other=params.get("delete_other", True)
+        )
+
+    # === 变形与雕刻工具 ===
+    def handle_simple_deform(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 simple_deform 命令"""
+        return self._adapter.simple_deform(
+            object_name=params.get("object_name"),
+            deform_type=params.get("deform_type", "BEND"),
+            factor=params.get("factor", 0.5),
+            angle=params.get("angle", 45),
+            lock_x=params.get("lock_x", True),
+            lock_y=params.get("lock_y", True),
+            lock_z=params.get("lock_z", False)
+        )
+
+    def handle_mesh_sculpt(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 mesh_sculpt 命令"""
+        return self._adapter.mesh_sculpt(
+            object_name=params.get("object_name"),
+            operation=params.get("operation", "SMOOTH"),
+            strength=params.get("strength", 0.5),
+            radius=params.get("radius", 1.0),
+            vertex_indices=params.get("vertex_indices")
+        )
+
+    # === 修改器工具 ===
+    def handle_add_modifier(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 add_modifier 命令"""
+        return self._adapter.add_modifier(
+            object_name=params.get("object_name"),
+            mod_type=params.get("mod_type", "SOLIDIFY"),
+            name=params.get("name"),
+            **params.get("kwargs", {})
+        )
+
+    def handle_apply_modifier(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 apply_modifier 命令"""
+        return self._adapter.apply_modifier(
+            object_name=params.get("object_name"),
+            mod_name=params.get("mod_name", ""),
+            apply_all=params.get("apply_all", False)
+        )
+
+    # === 文件导入导出 ===
+    def handle_export_model(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 export_model 命令"""
+        return self._adapter.export_model(
+            file_path=params.get("file_path"),
+            file_format=params.get("file_format", "STL"),
+            selection_only=params.get("selection_only", False)
+        )
+
+    def handle_import_model(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 import_model 命令"""
+        return self._adapter.import_model(
+            file_path=params.get("file_path"),
+            file_format=params.get("file_format", "STL")
+        )
+
+    # === 检查与修复 ===
+    def handle_check_model(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 check_model 命令"""
+        return self._adapter.check_model(
+            object_name=params.get("object_name")
+        )
+
+    def handle_repair_model(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 repair_model 命令"""
+        return self._adapter.repair_model(
+            object_name=params.get("object_name"),
+            recalc_normals=params.get("recalc_normals", True)
+        )
+
+    # === 项目文件管理 ===
     def handle_save_project(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """处理 save_project 命令"""
         try:

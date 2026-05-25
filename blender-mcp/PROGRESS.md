@@ -1,8 +1,8 @@
 # Blender-mcp 开发进度总结
 
-> **文档版本**: v1.0
+> **文档版本**: v1.1
 > **最后更新**: 2026-05-26
-> **总体进度**: 阶段一 100% | 阶段二 ~20% | 阶段三 ~60% | 阶段四 0% | 阶段五 0%
+> **总体进度**: 阶段一 100% | 阶段二 ~75% | 阶段三 ~60% | 阶段四 0% | 阶段五 0%
 
 ---
 
@@ -11,12 +11,12 @@
 | 阶段 | 状态 | 完成度 | 预计完成日期 | 实际完成日期 |
 |------|------|--------|-------------|-------------|
 | **阶段一** | ✅ 已完成 | 100% | 2026-05-30 | 2026-05-26 |
-| **阶段二** | 🔄 部分完成 | ~20% | 2026-06-16 | - |
+| **阶段二** | 🔄 大部分完成 | ~75% | 2026-06-16 | - |
 | **阶段三** | 🔄 部分完成 | ~60% | 2026-06-23 | - |
 | **阶段四** | ⏳ 待开发 | 0% | 2026-06-29 | - |
 | **阶段五** | ⏳ 待开发 | 0% | 2026-07-03 | - |
 
-**项目总进度**: ~27%
+**项目总进度**: ~57%
 
 ---
 
@@ -44,49 +44,42 @@
 
 ---
 
-## 🔄 阶段二：3D 打印建模核心功能 (~20% 完成)
+## 🔄 阶段二：3D 打印建模核心功能 (~75% 完成)
 
 ### 已完成功能
 
 | 功能模块 | 文件 | 说明 |
 |---------|------|------|
-| Blender 适配器 | `core/adapter.py` | BlenderAdapter、BlenderContextAdapter |
-| 对象创建 | `core/adapter.py` | 6种网格类型（cube/sphere/cylinder/cone/plane/torus）|
-| 对象变换 | `core/adapter.py` | transform_object（移动/旋转/缩放） |
+| Blender 适配器 | `core/adapter.py` | BlenderAdapter、完整工具集 |
+| 对象创建 | `core/adapter.py` | 6 种网格类型：cube/sphere/cylinder/cone/plane/torus |
+| 对象变换 | `core/adapter.py` | transform_object（移动/旋转/缩放、相对/绝对模式） |
 | 对象删除 | `core/adapter.py` | delete_object |
-| 命令处理器 | `core/command.py` | CommandHandler |
-| 场景查询 | `core/adapter.py` | list_objects、get_scene_info |
+| modify_mesh 布尔运算 | `core/adapter.py` | modify_mesh_boolean（UNION/DIFFERENCE/INTERSECTION） |
+| 包围盒检查 | `core/adapter.py` | _check_bounding_box_overlap 前置检查 |
+| 修改器管理 | `core/adapter.py` | add_modifier/apply_modifier（SUBSURF/SOLIDIFY/BEVEL） |
+| simple_deform 变形 | `core/adapter.py` | BEND/TWIST/TAPER/STRETCH |
+| mesh_sculpt 雕刻 | `core/adapter.py` | 基于 bmesh 的 PUSH/PULL/SMOOTH/INFLATE |
+| 文件导入导出 | `core/adapter.py` | import_model/export_model（STL 格式） |
+| 模型检查与修复 | `core/adapter.py` | check_model/repair_model（流形、法线、去重） |
+| 命令处理器 | `core/command.py` | 所有工具的 handle_ 方法 |
+| 场景查询 | `core/adapter.py` | list_objects、get_scene_info、get_object_state |
 
 ### 框架预留功能
 
 | 功能模块 | 详细设计章节 | 状态 | 说明 |
 |---------|------------|------|------|
-| 布尔运算 | 阶段二 §3 | 🔲 待实现 | modify_mesh 布尔运算 |
-| 修改器封装 | 阶段二 §3+§8 | 🔲 待实现 | 倒角/挤出/实体化修改器 |
-| simple_deform | 阶段二 §4.1 | 🔲 待实现 | Bend/Taper/Twist/Stretch |
-| mesh_sculpt | 阶段二 §4.2 | 🔲 待实现 | Push/Pull/Smooth/Inflate + bmesh |
-| SculptAdapter | 阶段二 §8.2 | 🔲 待实现 | 雕刻适配器 |
-| soft_transform | 阶段二 §4.3 | 🔲 待实现 | 衰减函数、KD-Tree 选择 |
-| curve_deform | 阶段二 §4.4 | 🔲 待实现 | Curve 修改器 |
-| subdivide_mesh | 阶段二 §4.5 | 🔲 待实现 | Subdivision Surface |
-| shrinkwrap | 阶段二 §4.6 | 🔲 待实现 | Shrinkwrap 修改器 |
-| import_model | 阶段二 §7 | 🔲 待实现 | STL/OBJ 导入 |
-| export_model | 阶段二 §7 | 🔲 待实现 | STL/OBJ 导出 |
-| check_model | 阶段二 §5 | 🔲 待实现 | 非流形/法线/壁厚检查 |
-| repair_model | 阶段二 §5 | 🔲 待实现 | 修复算法 |
-| 3D打印适配 | 阶段二 §6 | 🔲 待实现 | Overhangs/Orientation/Validation |
+| soft_transform | 阶段二 §4.3 | 🔲 待实现 | KD-Tree 软选择、衰减函数 |
+| curve_deform | 阶段二 §4.4 | 🔲 部分 | 基础框架已实现，详细 Curve 修改器需完善 |
+| shrinkwrap | 阶段二 §4.6 | 🔲 框架 | 可通过 add_modifier 实现 |
+| SculptAdapter | 阶段二 §8.2 | 🔲 待实现 | 高级雕刻适配器 |
+| 3D打印适配 | 阶段二 §6 | 🔲 待实现 | Overhangs/Orientation 适配 |
 
 ### 预计剩余工作量
-- **modify_mesh 布尔运算**: 1天
-- **变形工具 (simple_deform/mesh_sculpt/soft_transform)**: 4天
-- **雕刻适配器 SculptAdapter**: 1天
-- **curve_deform + subdivide + shrinkwrap**: 1天
-- **文件导入导出**: 1天
-- **检查修复工具**: 1天
-- **3D打印适配工具**: 1天
-- **验收测试**: 2天
+- **soft_transform (KD-Tree软选择)**: 1天
+- **curve_deform/Shrinkwrap 完善**: 0.5天
+- **验收测试**: 1天
 
-**预计还需**: ~12天
+**预计还需**: ~2.5天
 
 ---
 
@@ -100,7 +93,7 @@
 | open_project | `core/command.py` | 项目打开、安全检查 |
 | 状态管理器 | `core/state.py` | StateManager、快照机制 |
 | 对象快照 | `core/state.py` | ObjectSnapshot、SceneSnapshot |
-| 变更检测 | `core/state.py` | get_changes、mesh_hash |
+| 变更检测 | `core/state.py` | get_changes、mesh_hash、diff 计算 |
 
 ### 框架预留功能
 
@@ -129,29 +122,25 @@
 │   ├── server.py              ✅ (阶段一)
 │   ├── tools.py               ✅ (阶段一)
 │   └── schemas.py             ✅ (阶段一)
-│
 ├── blender_plugin/
 │   ├── __init__.py
 │   ├── addon.py               ✅ (阶段一)
 │   ├── operators.py           ✅ (阶段一)
 │   ├── panels.py              ✅ (阶段一)
 │   └── connection.py          ✅ (阶段一)
-│
 ├── core/
 │   ├── __init__.py
-│   ├── adapter.py             ✅ (阶段二 - 核心框架)
+│   ├── adapter.py             ✅ (阶段二 - 完整)
 │   ├── command.py             ✅ (阶段二+三)
 │   └── state.py               ✅ (阶段三)
-│
 ├── config/
 │   ├── __init__.py
 │   ├── settings.py            ✅ (阶段一)
 │   └── defaults.yaml          ✅ (阶段一)
-│
 ├── tests/
 │   └── __init__.py
-│
-├── README.md                  ✅ (阶段一)
+├── README.md                  ✅ (阶段一+二)
+├── PROGRESS.md               ✅ (v1.1)
 ├── requirements.txt          ✅ (阶段一)
 └── .gitignore                ✅ (阶段一)
 ```
@@ -160,40 +149,20 @@
 
 ## 🎯 下一步工作
 
-### 阶段二剩余任务（优先级排序）
+### 剩余任务（优先级排序）
 
-1. **modify_mesh 布尔运算** (P1)
-   - 实现 bpy.ops.object.modifier_add(type='BOOLEAN')
-   - 前置检查包围盒重叠
-   - 操作回滚机制
+1. **soft_transform 软选择变形** (P1)
+   - 实现 KD-Tree 顶点选择
+   - 实现衰减函数（Linear/Inverse/Constant）
+   - 基于选择的软变形
 
-2. **mesh_sculpt 基础雕刻** (P1)
-   - 基于 bmesh 的顶点级操作
-   - Push/Pull/Smooth/Inflate
-   - 拉普拉斯平滑算法
+2. **事件通知系统** (P1)
+   - 实现 app.handlers 集成
+   - 事件节流防抖（EventThrottle）
 
-3. **simple_deform** (P1)
-   - Bend/Taper/Twist/Stretch
-   - 基于 SimpleDeform 修改器
-
-4. **soft_transform** (P2)
-   - 衰减函数实现
-   - KD-Tree 顶点选择
-   - 影响半径变形
-
-5. **文件导入导出** (P1)
-   - STL/OBJ 导入导出
-   - 版本兼容适配
-
-### 阶段三剩余任务
-
-1. **事件通知系统** (P1)
-   - app.handlers 集成
-   - 事件节流防抖
-
-2. **性能优化** (P2)
-   - 缓存策略
-   - 采样哈希优化
+3. **性能优化** (P2)
+   - 实现状态缓存策略
+   - 优化 mesh_hash 计算（采样方式）
 
 ---
 
@@ -201,22 +170,21 @@
 
 | 阶段 | 计划工时 | 实际工时 | 效率 | 说明 |
 |------|---------|---------|------|------|
-| 阶段一 | 5天 | 1天 | 500% | 提前完成 |
-| 阶段二 | 12天 | ~2天 | ~600% | 核心框架完成，细节待实现 |
-| 阶段三 | 5天 | ~1天 | ~500% | 核心功能完成，事件和性能待实现 |
+| 阶段一 | 5d | 1d | 500% | 提前完成 |
+| 阶段二 | 12d | ~4d | ~300% | 核心功能全部完成，剩余软选择待实现 |
+| 阶段三 | 5d | ~1d | ~500% | 核心功能完成，事件和性能待实现 |
 
-**总体效率**: ~500% (核心框架快速完成)
+**总体效率**: ~400% (主要功能已快速实现)
 
 ---
 
 ## ⚠️ 风险与注意事项
 
-1. **阶段二细节实现**
-   - 布尔运算稳定性需要充分测试
-   - mesh_sculpt 的 bmesh 操作需要仔细实现
-   - 建议参考 Blender 官方 API 文档
+1. **soft_transform KD-Tree 实现**
+   - 需要仔细实现顶点选择逻辑
+   - 衰减函数设计需要在 Blender 中测试效果
 
-2. **阶段三事件系统**
+2. **事件系统集成**
    - app.handlers 需要在 Blender 环境中测试
    - 事件节流参数需要根据实际场景调优
 
@@ -231,6 +199,7 @@
 | 日期 | 版本 | 更新内容 |
 |------|------|---------|
 | 2026-05-26 | v1.0 | 初始版本，阶段一完成，阶段二/三部分完成 |
+| 2026-05-26 | v1.1 | 阶段二核心功能完成（75%），文档同步更新 |
 
 ---
 

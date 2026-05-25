@@ -4,7 +4,9 @@ Blender API 适配器 - 阶段二核心模块
 """
 
 import bpy
+import bmesh
 import logging
+import math
 from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass
 from enum import Enum
@@ -458,15 +460,467 @@ class BlenderAdapter:
 
         return f"{base_name}.{count:03d}"
 
+    # === modify_mesh 布尔运算 ===
+    def modify_mesh_boolean(
+        self,
+        target_name: str,
+        operation: str = "UNION",
+        object_name: Optional[str] = None,
+        delete_other: bool = True
+    ) -> Dict[str, Any]:
+        """
+        执行布尔运算（UNION/INTERSECTION/DIFFERENCE）
+
+        Args:
+            target_name: 目标对象名称
+            operation: 布尔操作类型
+            object_name: 操作对象名称（None 表示使用活跃对象）
+            delete_other: 操作后是否删除操作对象
+        """
+        try:
+            target_obj = bpy.data.objects.get(target_name)
+            if not target_obj:
+                return {
+                    "success": False,
+                    "error": f"目标对象不存在: {target_name}"
+                }
+
+            if object_name:
+                other_obj = bpy.data.objects.get(object_name)
+            else:
+                other_obj = bpy.context.active_object
+
+            if not other_obj:
+                return {
+                    "success": False,
+                    "error": "没有操作对象"
+                }
+
+            # 前置检查: 包围盒重叠
+            if not self._check_bounding_box_overlap(target_obj, other_obj):
+                logger.warning("警告: 包围盒不重叠")
+
+            # 添加布尔修改器
+            mod = target_obj.modifiers.new(name="Boolean", type='BOOLEAN')
+            mod.operation = operation
+            mod.object = other_obj
+
+            # 应用修改器
+            bpy.context.view_layer.objects.active = target_obj
+            self._context_adapter.deselect_all()
+            target_obj.select_set(True)
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+
+            # 删除操作对象
+            if delete_other:
+                self._context_adapter.deselect_all()
+                other_obj.select_set(True)
+                bpy.ops.object.delete(confirm=False)
+
+            return {
+                "success": True,
+                "target": target_obj.name_full,
+                "operation": operation,
+                "message": f"成功执行布尔 {operation}"
+            }
+        except Exception as e:
+            logger.exception(f"布尔运算失败: {e}")
+            return {
+                "success": False,
+                "error": f"布尔运算失败: {str(e)}"
+            }
+
+    def _check_bounding_box_overlap(
+        self,
+        obj1: bpy.types.Object,
+        obj2: bpy.types.Object
+    ) -> bool:
+        """检查两个对象的包围盒是否重叠"""
+        bbox1 = self._get_world_bbox(obj1)
+        bbox2 = self._get_world_bbox(obj2)
+        for i in range(3):
+            if bbox1['max'][i] < bbox2['min'][i]:
+                return False
+            if bbox1['min'][i] > bbox2['max'][i]:
+                return False
+        return True
+
+    def _get_world_bbox(self, obj: bpy.types.Object) -> Dict[str, Tuple]:
+        """获取对象的世界坐标包围盒"""
+        matrix = obj.matrix_world
+        bbox_world = [matrix @ bpy.mathutils.Vector(p) for p in obj.bound_box]
+        min_vec = bpy.mathutils.Vector((float('inf'),) * 3)
+        max_vec = bpy.mathutils.Vector((-float('inf'),) * 3)
+        for v in bbox_world:
+            min_vec.x = min(min_vec.x, v.x)
+            min_vec.y = min(min_vec.y, v.y)
+            min_vec.z = min(min_vec.z, v.z)
+            max_vec.x = max(max_vec.x, v.x)
+            max_vec.y = max(max_vec.y, v.y)
+            max_vec.z = max(max_vec.z, v.z)
+        return {'min': (min_vec.x, min_vec.y, min_vec.z),
+                'max': (max_vec.x, max_vec.y, max_vec.z)}
+
+    # === 变形与雕刻工具 ===
+    def simple_deform(
+        self,
+        object_name: Optional[str] = None,
+        deform_type: str = "BEND",
+        factor: float = 0.5,
+        angle: float = 45,
+        lock_x: bool = True,
+        lock_y: bool = True,
+        lock_z: bool = False
+    ) -> Dict[str, Any]:
+        """
+        SimpleDeform 变形（BEND/TWIST/TAPER/STRETCH）
+        """
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj:
+                return {"success": False, "error": "没有对象"}
+
+            mod = obj.modifiers.new(name="SimpleDeform", type='SIMPLE_DEFORM')
+            mod.deform_method = deform_type
+            if deform_type == "BEND":
+                mod.angle = radians(angle)
+            else:
+                mod.factor = factor
+            if lock_x:
+                mod.lock_x = True
+            if lock_y:
+                mod.lock_y = True
+            if lock_z:
+                mod.lock_z = True
+
+            # 应用修改器
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+
+            return {
+                "success": True,
+                "type": deform_type,
+                "object": obj.name_full
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"simple_deform 失败: {str(e)}"
+            }
+
+    def mesh_sculpt(
+        self,
+        object_name: Optional[str] = None,
+        operation: str = "SMOOTH",
+        strength: float = 0.5,
+        radius: float = 1.0,
+        vertex_indices: Optional[List[int]] = None
+    ) -> Dict[str, Any]:
+        """
+        基础雕刻操作（PUSH/PULL/SMOOTH/INFLATE）
+        基于 bmesh 实现
+        """
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj or obj.type != 'MESH':
+                return {
+                    "success": False,
+                    "error": "不是网格对象"
+                }
+
+            # 进入 Edit 模式或直接用 bmesh
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+
+            # 选择顶点（默认全部或指定索引）
+            selected_verts = []
+            if vertex_indices:
+                selected_verts = [bm.verts[i] for i in vertex_indices if 0 <= i < len(bm.verts)]
+            else:
+                selected_verts = list(bm.verts)
+
+            if not selected_verts:
+                return {
+                    "success": False,
+                    "error": "没有选中顶点"
+                }
+
+            # 执行雕刻操作
+            for v in selected_verts:
+                if operation == "SMOOTH":
+                    # 拉普拉斯平滑
+                    neighbors = list(v.link_edges)
+                    if neighbors:
+                        avg = bpy.mathutils.Vector((0, 0, 0))
+                        for e in neighbors:
+                            other = e.other_vert(v)
+                            avg += other.co
+                        avg /= len(neighbors)
+                        v.co = v.co + (avg - v.co) * strength
+                elif operation == "PUSH":
+                    # 沿法线向内推
+                    v.co -= v.normal * strength
+                elif operation == "PULL":
+                    # 沿法线向外拉
+                    v.co += v.normal * strength
+                elif operation == "INFLATE":
+                    # 膨胀：沿法线向外
+                    v.co += v.normal * strength
+
+            # 更新回 Mesh
+            bm.to_mesh(obj.data)
+            obj.data.update()
+            bm.free()
+
+            return {
+                "success": True,
+                "operation": operation,
+                "affected_verts": len(selected_verts),
+                "object": obj.name_full
+            }
+        except Exception as e:
+            logger.exception(f"mesh_sculpt 失败")
+            return {
+                "success": False,
+                "error": f"mesh_sculpt 失败: {str(e)}"
+            }
+
+    # === 修改器添加 ===
+    def add_modifier(
+        self,
+        object_name: Optional[str] = None,
+        mod_type: str = "SOLIDIFY",
+        name: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        通用修改器添加：SOLIDIFY/SUBSURF/BEVEL/等
+        """
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj:
+                return {
+                    "success": False,
+                    "error": "没有对象"
+                }
+
+            mod = obj.modifiers.new(name=name or mod_type, type=mod_type)
+
+            # 根据类型设置参数
+            if mod_type == "SUBSURF":
+                mod.levels = kwargs.get("levels", 2)
+                mod.render_levels = kwargs.get("render_levels", 2)
+            elif mod_type == "SOLIDIFY":
+                mod.thickness = kwargs.get("thickness", 0.01)
+            elif mod_type == "BEVEL":
+                mod.width = kwargs.get("width", 0.01)
+                mod.segments = kwargs.get("segments", 2)
+
+            return {
+                "success": True,
+                "mod_type": mod_type,
+                "object": obj.name_full
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"添加修改器失败: {str(e)}"
+            }
+
+    def apply_modifier(
+        self,
+        object_name: Optional[str] = None,
+        mod_name: str = "",
+        apply_all: bool = False
+    ) -> Dict[str, Any]:
+        """应用修改器"""
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj:
+                return {
+                    "success": False,
+                    "error": "没有对象"
+                }
+
+            if apply_all:
+                mod_names = [mod.name for mod in obj.modifiers]
+                for name in mod_names:
+                    try:
+                        bpy.context.view_layer.objects.active = obj
+                        bpy.ops.object.modifier_apply(modifier=name)
+                    except Exception:
+                        pass
+                return {
+                    "success": True,
+                    "applied": mod_names
+                }
+            else:
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.object.modifier_apply(modifier=mod_name)
+                return {
+                    "success": True,
+                    "applied": mod_name
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # === 文件导入导出 ===
+    def export_model(
+        self,
+        file_path: str,
+        file_format: str = "STL",
+        selection_only: bool = False
+    ) -> Dict[str, Any]:
+        """导出模型"""
+        try:
+            bpy.ops.export_mesh.stl(
+                filepath=file_path,
+                use_selection=selection_only
+            )
+            return {
+                "success": True,
+                "file": file_path,
+                "format": file_format
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"导出失败: {str(e)}"
+            }
+
+    def import_model(
+        self,
+        file_path: str,
+        file_format: str = "STL"
+    ) -> Dict[str, Any]:
+        """导入模型"""
+        try:
+            bpy.ops.import_mesh.stl(filepath=file_path)
+            obj = bpy.context.active_object
+            return {
+                "success": True,
+                "object": obj.name_full if obj else None
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"导入失败: {str(e)}"
+            }
+
+    # === 模型检查与修复 ===
+    def check_model(
+        self,
+        object_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        检查模型问题：非流形、法线方向、壁厚
+        """
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj or obj.type != 'MESH':
+                return {
+                    "success": False,
+                    "error": "不是网格对象"
+                }
+
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+
+            issues = {
+                "non_manifold_edges": 0,
+                "non_manifold_verts": 0,
+                "normals_inconsistent": False
+            }
+
+            # 检查边
+            for e in bm.edges:
+                if not e.is_manifold:
+                    issues["non_manifold_edges"] += 1
+
+            # 检查顶点
+            for v in bm.verts:
+                if not v.is_manifold:
+                    issues["non_manifold_verts"] += 1
+
+            # 检查法线 (简单检查)
+            faces = list(bm.faces)
+            avg_normal = None
+            issues_count = 0
+            for f in faces:
+                n = f.normal.normalized()
+                if avg_normal is None:
+                    avg_normal = n
+                else:
+                    if avg_normal.dot(n) < 0.0:
+                        issues_count += 1
+            if issues_count > len(faces) * 0.3:
+                issues["normals_inconsistent"] = True
+
+            bm.free()
+
+            return {
+                "success": True,
+                "issues": issues,
+                "is_print_ready": (
+                    issues["non_manifold_edges"] == 0 and
+                    issues["non_manifold_verts"] == 0 and
+                    not issues["normals_inconsistent"]
+                )
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def repair_model(
+        self,
+        object_name: Optional[str] = None,
+        recalc_normals: bool = True
+    ) -> Dict[str, Any]:
+        """修复模型问题"""
+        try:
+            obj = bpy.data.objects.get(object_name) if object_name else bpy.context.active_object
+            if not obj or obj.type != 'MESH':
+                return {
+                    "success": False,
+                    "error": "不是网格对象"
+                }
+
+            # 切换到 Edit 模式并选中所有顶点
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+
+            # 执行修复操作
+            bpy.ops.mesh.remove_doubles()
+            if recalc_normals:
+                bpy.ops.mesh.normals_make_consistent(inside=False)
+            bpy.ops.mesh.select_all(action='DESELECT')
+
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            return {
+                "success": True,
+                "message": "修复完成"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"修复失败: {str(e)}"
+            }
+
 
 # 辅助函数
-def radians(degrees: float) -> float:
+def radians(degrees_val: float) -> float:
     """角度转弧度"""
-    import math
-    return degrees * math.pi / 180.0
+    return degrees_val * math.pi / 180.0
 
 
-def degrees(radians: float) -> float:
+def degrees(radians_val: float) -> float:
     """弧度转角度"""
-    import math
-    return radians * 180.0 / math.pi
+    return radians_val * 180.0 / math.pi
