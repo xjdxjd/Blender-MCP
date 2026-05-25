@@ -1,6 +1,6 @@
-MIT License
+# MIT License
 
-Copyright (c) 2026 xjdxjd
+Copyright (c) 2026 Blender-mcp Project
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 第三方许可证
+
+本项目使用了以下开源组件：
+
+### Python 依赖
+
+| 依赖 | 版本 | 许可证 |
+|------|------|--------|
+| mcp | - | MIT |
+| bpy | (Blender 内置) | GPL |
+| websockets | - | BSD-3-Clause |
+| pydantic | - | MIT |
+
+### Blender
+
+Blender 使用 GPL 许可证。本项目通过 Blender Python API (bpy) 与 Blender 交互，受 GPL 约束。
+
+---
+
+## 商标声明
+
+- **Blender** 是 Blender Foundation 的注册商标
+- **Model Context Protocol (MCP)** 是 Anthropic 的商标
+- **Trae SOLO** 是相关公司的商标
+
+本项目与 Blender Foundation、Anthropic 或其他相关公司没有关联关系。
