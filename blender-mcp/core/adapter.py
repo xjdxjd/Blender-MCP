@@ -1207,6 +1207,507 @@ class BlenderAdapter:
                 "error": f"shrinkwrap 失败: {str(e)}"
             }
 
+    # === 材质工具 ===
+    @staticmethod
+    def create_principled_material(
+        name: str,
+        base_color: Tuple[float, float, float, float] = (0.8, 0.8, 0.8, 1.0),
+        metallic: float = 0.0,
+        roughness: float = 0.5,
+        specular: float = 0.5,
+        transmission: float = 0.0,
+        emission_color: Optional[Tuple[float, float, float, float]] = None,
+        emission_strength: float = 0.0,
+        alpha: float = 1.0,
+    ) -> bpy.types.Material:
+        _validate_material_params(
+            base_color=base_color,
+            metallic=metallic,
+            roughness=roughness,
+            specular=specular,
+            transmission=transmission,
+            alpha=alpha,
+        )
+
+        material = bpy.data.materials.new(name=name)
+        material.use_nodes = True
+
+        node_tree = material.node_tree
+        principled_node = _find_principled_bsdf(node_tree)
+
+        if principled_node is None:
+            principled_node = node_tree.nodes.new('ShaderNodeBsdfPrincipled')
+
+        principled_node.inputs['Base Color'].default_value = base_color
+        principled_node.inputs['Metallic'].default_value = metallic
+        principled_node.inputs['Roughness'].default_value = roughness
+        principled_node.inputs['Specular'].default_value = specular
+        principled_node.inputs['Alpha'].default_value = alpha
+
+        if 'Transmission' in principled_node.inputs:
+            principled_node.inputs['Transmission'].default_value = transmission
+
+        if emission_color is not None and emission_strength > 0:
+            if 'Emission Color' in principled_node.inputs:
+                principled_node.inputs['Emission Color'].default_value = emission_color
+            if 'Emission Strength' in principled_node.inputs:
+                principled_node.inputs['Emission Strength'].default_value = emission_strength
+
+        if alpha < 1.0 or transmission > 0.0:
+            if hasattr(material, 'blend_method'):
+                material.blend_method = 'BLEND'
+            if hasattr(material, 'shadow_method'):
+                material.shadow_method = 'HASHED'
+
+        return material
+
+    def set_material(
+        self,
+        object_id: str,
+        material_name: Optional[str] = None,
+        preset: Optional[str] = None,
+        replace: bool = False,
+        base_color: Tuple[float, float, float, float] = (0.8, 0.8, 0.8, 1.0),
+        metallic: float = 0.0,
+        roughness: float = 0.5,
+        specular: float = 0.5,
+        transmission: float = 0.0,
+        emission_color: Optional[Tuple[float, float, float, float]] = None,
+        emission_strength: float = 0.0,
+        alpha: float = 1.0,
+    ) -> Dict[str, Any]:
+        try:
+            obj = bpy.data.objects.get(object_id)
+            if obj is None:
+                return {
+                    "success": False,
+                    "error": f"对象 '{object_id}' 不存在",
+                    "error_code": "OBJECT_NOT_FOUND"
+                }
+
+            if obj.type not in ('MESH', 'CURVE', 'SURFACE', 'FONT', 'META'):
+                return {
+                    "success": False,
+                    "error": f"对象类型 '{obj.type}' 不支持材质分配",
+                    "error_code": "OPERATION_NOT_ALLOWED"
+                }
+
+            if not material_name:
+                material_name = f"Material_{object_id}"
+
+            if preset:
+                material = MaterialLibrary.get_or_create(
+                    name=material_name,
+                    preset=preset,
+                    base_color=base_color,
+                    metallic=metallic,
+                    roughness=roughness,
+                    specular=specular,
+                    transmission=transmission,
+                    alpha=alpha,
+                )
+            else:
+                material = self.create_principled_material(
+                    name=material_name,
+                    base_color=base_color,
+                    metallic=metallic,
+                    roughness=roughness,
+                    specular=specular,
+                    transmission=transmission,
+                    emission_color=emission_color,
+                    emission_strength=emission_strength,
+                    alpha=alpha,
+                )
+
+            if replace:
+                for i in range(len(obj.material_slots)):
+                    obj.data.materials.pop(index=0)
+
+            obj.data.materials.append(material)
+            slot_index = len(obj.material_slots) - 1
+            obj.active_material_index = slot_index
+
+            return {
+                "success": True,
+                "object_id": object_id,
+                "material_name": material.name,
+                "material_id": material.name,
+                "slot_index": slot_index,
+                "total_materials": len(obj.material_slots),
+                "preset": preset,
+            }
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": "INVALID_PARAMETER"
+            }
+        except Exception as e:
+            logger.exception(f"set_material 失败")
+            return {
+                "success": False,
+                "error": f"set_material 失败: {str(e)}"
+            }
+
+    def list_materials(self) -> Dict[str, Any]:
+        try:
+            materials = MaterialLibrary.list_materials()
+            return {
+                "success": True,
+                "count": len(materials),
+                "materials": materials
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def delete_material(self, name: str) -> Dict[str, Any]:
+        try:
+            deleted = MaterialLibrary.delete_material(name)
+            if deleted:
+                return {
+                    "success": True,
+                    "deleted": name
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"无法删除材质 '{name}'（不存在或仍有用户引用）"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # === 渲染工具 ===
+    def render_scene(
+        self,
+        engine: str = 'CYCLES',
+        resolution_x: int = 1920,
+        resolution_y: int = 1080,
+        resolution_percentage: int = 100,
+        output_path: Optional[str] = None,
+        file_format: str = 'PNG',
+        color_mode: str = 'RGBA',
+        color_depth: int = 8,
+        compression: int = 15,
+        samples: Optional[int] = None,
+        use_denoising: bool = True,
+    ) -> Dict[str, Any]:
+        import os
+        import tempfile
+        import time as _time
+
+        try:
+            scene = bpy.context.scene
+
+            camera = None
+            for obj in scene.objects:
+                if obj.type == 'CAMERA':
+                    camera = obj
+                    break
+            if camera is None:
+                return {
+                    "success": False,
+                    "error": "场景中没有相机，无法渲染",
+                    "error_code": "OPERATION_NOT_ALLOWED"
+                }
+
+            engine_upper = engine.upper()
+            if engine_upper not in RENDER_ENGINE_MAP:
+                return {
+                    "success": False,
+                    "error": f"不支持的渲染引擎: '{engine}'，可选值: {list(RENDER_ENGINE_MAP.keys())}",
+                    "error_code": "INVALID_PARAMETER"
+                }
+
+            scene.render.engine = RENDER_ENGINE_MAP[engine_upper]
+
+            if engine_upper == 'CYCLES':
+                scene.cycles.device = 'CPU'
+                scene.cycles.samples = 128
+                scene.cycles.use_denoising = True
+            elif engine_upper == 'EEVEE':
+                if hasattr(scene, 'eevee'):
+                    scene.eevee.taa_render_samples = 64
+
+            render = scene.render
+            render.resolution_x = resolution_x
+            render.resolution_y = resolution_y
+            render.resolution_percentage = resolution_percentage
+
+            if output_path is None:
+                output_dir = tempfile.mkdtemp(prefix="blender-mcp-render-")
+                output_path = os.path.join(output_dir, "render.png")
+
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.isdir(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+
+            render.filepath = output_path
+
+            render.image_settings.file_format = FORMAT_MAP.get(
+                file_format.upper(), 'PNG'
+            )
+            render.image_settings.color_mode = color_mode
+            render.image_settings.color_depth = str(color_depth)
+
+            if render.image_settings.file_format == 'PNG':
+                render.image_settings.compression = compression
+
+            if samples is not None:
+                if engine_upper == 'CYCLES':
+                    scene.cycles.samples = samples
+                elif engine_upper == 'EEVEE' and hasattr(scene, 'eevee'):
+                    scene.eevee.taa_render_samples = samples
+
+            if engine_upper == 'CYCLES':
+                scene.cycles.use_denoising = use_denoising
+
+            start_time = _time.time()
+
+            try:
+                bpy.ops.render.render(write_still=True)
+            except RuntimeError as e:
+                if "GPU" in str(e) and engine_upper == 'CYCLES':
+                    scene.cycles.device = 'CPU'
+                    bpy.ops.render.render(write_still=True)
+                else:
+                    raise
+
+            render_time = _time.time() - start_time
+
+            actual_output = render.filepath
+            if not actual_output.endswith(('.png', '.jpg', '.jpeg', '.tif', '.exr')):
+                actual_output += '.png'
+
+            file_size = 0
+            if os.path.exists(actual_output):
+                file_size = os.path.getsize(actual_output)
+
+            actual_samples = samples
+            if actual_samples is None:
+                if engine_upper == 'CYCLES':
+                    actual_samples = scene.cycles.samples
+                elif engine_upper == 'EEVEE' and hasattr(scene, 'eevee'):
+                    actual_samples = scene.eevee.taa_render_samples
+
+            return {
+                "success": True,
+                "output_path": actual_output,
+                "resolution": [resolution_x, resolution_y],
+                "resolution_percentage": resolution_percentage,
+                "engine": engine,
+                "samples": actual_samples,
+                "use_denoising": use_denoising,
+                "render_time": round(render_time, 2),
+                "file_size": file_size,
+                "file_format": file_format,
+            }
+        except Exception as e:
+            logger.exception(f"render_scene 失败")
+            return {
+                "success": False,
+                "error": f"render_scene 失败: {str(e)}"
+            }
+
+
+def _validate_material_params(
+    base_color: tuple,
+    metallic: float,
+    roughness: float,
+    specular: float,
+    transmission: float,
+    alpha: float,
+) -> None:
+    for i, c in enumerate(base_color):
+        if not (0.0 <= c <= 1.0):
+            raise ValueError(f"base_color[{i}] = {c} 超出范围 [0.0, 1.0]")
+
+    for name, value, lo, hi in [
+        ('metallic', metallic, 0.0, 1.0),
+        ('roughness', roughness, 0.0, 1.0),
+        ('specular', specular, 0.0, 1.0),
+        ('transmission', transmission, 0.0, 1.0),
+        ('alpha', alpha, 0.0, 1.0),
+    ]:
+        if not (lo <= value <= hi):
+            raise ValueError(f"{name} = {value} 超出范围 [{lo}, {hi}]")
+
+
+def _find_principled_bsdf(node_tree):
+    for node in node_tree.nodes:
+        if node.type == 'BSDF_PRINCIPLED':
+            return node
+    return None
+
+
+class MaterialLibrary:
+    PRESETS = {
+        'plastic': {
+            'metallic': 0.0, 'roughness': 0.4, 'transmission': 0.0,
+        },
+        'glossy_plastic': {
+            'metallic': 0.0, 'roughness': 0.1, 'transmission': 0.0,
+        },
+        'metal': {
+            'metallic': 1.0, 'roughness': 0.3, 'transmission': 0.0,
+        },
+        'chrome': {
+            'base_color': (0.8, 0.8, 0.8, 1.0),
+            'metallic': 1.0, 'roughness': 0.05, 'transmission': 0.0,
+        },
+        'glass': {
+            'metallic': 0.0, 'roughness': 0.0, 'transmission': 1.0,
+        },
+        'rubber': {
+            'metallic': 0.0, 'roughness': 0.9, 'transmission': 0.0,
+        },
+        'ceramic': {
+            'metallic': 0.0, 'roughness': 0.2, 'transmission': 0.0,
+        },
+        'wood': {
+            'metallic': 0.0, 'roughness': 0.7, 'transmission': 0.0,
+        },
+    }
+
+    @classmethod
+    def get_or_create(cls, name: str, preset: Optional[str] = None, **overrides) -> bpy.types.Material:
+        existing = bpy.data.materials.get(name)
+        if existing is not None:
+            return existing
+
+        params = {}
+        if preset and preset in cls.PRESETS:
+            params = dict(cls.PRESETS[preset])
+        params.update(overrides)
+
+        return BlenderAdapter.create_principled_material(name=name, **params)
+
+    @classmethod
+    def list_materials(cls) -> List[dict]:
+        materials = []
+        for mat in bpy.data.materials:
+            principled = None
+            if mat.use_nodes:
+                principled = _find_principled_bsdf(mat.node_tree)
+
+            info = {
+                'name': mat.name,
+                'users': mat.users,
+                'has_nodes': mat.use_nodes,
+            }
+
+            if principled:
+                info['properties'] = {
+                    'base_color': list(principled.inputs['Base Color'].default_value),
+                    'metallic': principled.inputs['Metallic'].default_value,
+                    'roughness': principled.inputs['Roughness'].default_value,
+                    'specular': principled.inputs['Specular'].default_value,
+                    'transmission': principled.inputs['Transmission'].default_value,
+                }
+
+            materials.append(info)
+
+        return materials
+
+    @classmethod
+    def delete_material(cls, name: str) -> bool:
+        mat = bpy.data.materials.get(name)
+        if mat is None:
+            return False
+        if mat.users > 0:
+            return False
+        bpy.data.materials.remove(mat)
+        return True
+
+
+RENDER_ENGINE_MAP = {
+    'EEVEE': 'BLENDER_EEVEE_NEXT',
+    'CYCLES': 'CYCLES',
+}
+
+FORMAT_MAP = {
+    'PNG': 'PNG',
+    'JPEG': 'JPEG',
+    'JPG': 'JPEG',
+    'TIFF': 'TIFF',
+    'EXR': 'OPEN_EXR',
+    'OPENEXR': 'OPEN_EXR',
+}
+
+
+class RenderProgressCallback:
+    def __init__(self, notification_sender=None):
+        self.notification_sender = notification_sender
+        self._start_time: float = 0.0
+        self._last_progress: float = 0.0
+        self._progress_interval: float = 5.0
+
+    def register(self) -> None:
+        bpy.app.handlers.render_init.append(self._on_render_init)
+        bpy.app.handlers.render_complete.append(self._on_render_complete)
+        bpy.app.handlers.render_cancel.append(self._on_render_cancel)
+        bpy.app.handlers.render_write.append(self._on_render_write)
+
+    def unregister(self) -> None:
+        for handler_list, callback in [
+            (bpy.app.handlers.render_init, self._on_render_init),
+            (bpy.app.handlers.render_complete, self._on_render_complete),
+            (bpy.app.handlers.render_cancel, self._on_render_cancel),
+            (bpy.app.handlers.render_write, self._on_render_write),
+        ]:
+            if callback in handler_list:
+                handler_list.remove(callback)
+
+    def _on_render_init(self, scene, depsgraph) -> None:
+        import time as _time
+        self._start_time = _time.time()
+        self._last_progress = 0.0
+        self._send_notification("render/started", {
+            "engine": scene.render.engine,
+            "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+        })
+
+    def _on_render_write(self, scene, depsgraph) -> None:
+        import time as _time
+        now = _time.time()
+        if now - self._last_progress < self._progress_interval:
+            return
+        self._last_progress = now
+        elapsed = now - self._start_time
+        self._send_notification("render/progress", {
+            "elapsed_seconds": round(elapsed, 1),
+        })
+
+    def _on_render_complete(self, scene, depsgraph) -> None:
+        import time as _time
+        elapsed = _time.time() - self._start_time
+        self._send_notification("render/completed", {
+            "elapsed_seconds": round(elapsed, 2),
+            "output_path": scene.render.filepath,
+        })
+
+    def _on_render_cancel(self, scene, depsgraph) -> None:
+        import time as _time
+        elapsed = _time.time() - self._start_time
+        self._send_notification("render/cancelled", {
+            "elapsed_seconds": round(elapsed, 2),
+        })
+
+    def _send_notification(self, event: str, data: dict) -> None:
+        if self.notification_sender:
+            self.notification_sender.send({
+                "method": "notifications/render",
+                "params": {
+                    "event": event,
+                    "data": data,
+                }
+            })
+
 
 # 辅助函数
 def radians(degrees_val: float) -> float:
