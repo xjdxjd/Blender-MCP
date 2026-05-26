@@ -9,20 +9,18 @@ from bpy.types import PropertyGroup
 from . import operators
 from . import panels
 
-# 插件元数据
 bl_info = {
     "name": "Blender MCP",
     "author": "Blender-mcp 项目团队",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
-    "location": "3D视图 > 侧边栏 > Blender MCP",
+    "location": "View3D > Sidebar > Blender MCP",
     "description": "通过 MCP 协议连接 Blender 和 AI 助手",
-    "category": "系统",
+    "category": "System",
     "support": "COMMUNITY",
     "doc_url": "https://github.com/blender-mcp/blender-mcp",
 }
 
-# 需要注册的类列表
 _classes = [
     operators.BLENDER_MCP_OT_StartServer,
     operators.BLENDER_MCP_OT_StopServer,
@@ -32,7 +30,7 @@ _classes = [
 
 
 class BlenderMCPProperties(PropertyGroup):
-    """插件属性组，存储在 bpy.types.Scene 上。"""
+    """插件属性组"""
 
     host: StringProperty(
         name="主机地址",
@@ -79,7 +77,7 @@ class BlenderMCPProperties(PropertyGroup):
 
 
 def register():
-    """注册插件所有类和属性。"""
+    """注册插件所有类和属性"""
     for cls in _classes:
         bpy.utils.register_class(cls)
 
@@ -91,7 +89,7 @@ def register():
 
 
 def unregister():
-    """注销插件所有类和属性，清理资源。"""
+    """注销插件所有类和属性"""
     from . import connection
     ws_client = connection.get_ws_client()
     if ws_client and ws_client.is_connected:
