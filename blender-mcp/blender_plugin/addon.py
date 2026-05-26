@@ -12,12 +12,12 @@ from . import panels
 # 插件元数据
 bl_info = {
     "name": "Blender MCP",
-    "author": "Blender-mcp Project",
+    "author": "Blender-mcp 项目团队",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
-    "location": "View3D > Sidebar > Blender MCP",
-    "description": "Connect Blender to AI assistants via MCP protocol",
-    "category": "System",
+    "location": "3D视图 > 侧边栏 > Blender MCP",
+    "description": "通过 MCP 协议连接 Blender 和 AI 助手",
+    "category": "系统",
     "support": "COMMUNITY",
     "doc_url": "https://github.com/blender-mcp/blender-mcp",
 }
@@ -35,13 +35,13 @@ class BlenderMCPProperties(PropertyGroup):
     """插件属性组，存储在 bpy.types.Scene 上。"""
 
     host: StringProperty(
-        name="Host",
+        name="主机地址",
         default="127.0.0.1",
         description="MCP 服务 WebSocket 地址"
     )
 
     port: IntProperty(
-        name="Port",
+        name="端口",
         default=8765,
         min=1024,
         max=65535,
@@ -49,30 +49,30 @@ class BlenderMCPProperties(PropertyGroup):
     )
 
     auto_connect: BoolProperty(
-        name="Auto Connect",
+        name="自动连接",
         default=False,
         description="启用插件时自动连接"
     )
 
     connection_status: EnumProperty(
-        name="Status",
+        name="状态",
         items=[
-            ('DISCONNECTED', 'Disconnected', '未连接'),
-            ('CONNECTING', 'Connecting', '连接中'),
-            ('CONNECTED', 'Connected', '已连接'),
-            ('RECONNECTING', 'Reconnecting', '重连中'),
-            ('ERROR', 'Error', '连接错误'),
+            ('DISCONNECTED', '未连接', '未连接'),
+            ('CONNECTING', '连接中', '正在连接'),
+            ('CONNECTED', '已连接', '已连接'),
+            ('RECONNECTING', '重连中', '重新连接中'),
+            ('ERROR', '错误', '连接错误'),
         ],
         default='DISCONNECTED',
     )
 
     last_error: StringProperty(
-        name="Last Error",
+        name="最后错误",
         default=""
     )
 
     latency_ms: FloatProperty(
-        name="Latency",
+        name="延迟",
         default=0.0,
         description="最近一次 ping 延迟（毫秒）"
     )

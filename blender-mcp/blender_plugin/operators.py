@@ -8,7 +8,7 @@ import bpy
 class BLENDER_MCP_OT_StartServer(bpy.types.Operator):
     """启动 WebSocket 连接"""
     bl_idname = "blender_mcp.start_server"
-    bl_label = "Connect"
+    bl_label = "连接"
     bl_description = "连接到 MCP 服务"
 
     def execute(self, context):
@@ -41,7 +41,7 @@ class BLENDER_MCP_OT_StartServer(bpy.types.Operator):
 class BLENDER_MCP_OT_StopServer(bpy.types.Operator):
     """断开 WebSocket 连接"""
     bl_idname = "blender_mcp.stop_server"
-    bl_label = "Disconnect"
+    bl_label = "断开连接"
     bl_description = "断开与 MCP 服务的连接"
 
     def execute(self, context):
@@ -62,7 +62,7 @@ class BLENDER_MCP_OT_StopServer(bpy.types.Operator):
 class BLENDER_MCP_OT_PingTest(bpy.types.Operator):
     """执行 ping 测试"""
     bl_idname = "blender_mcp.ping_test"
-    bl_label = "Ping Test"
+    bl_label = "Ping 测试"
     bl_description = "测试与 MCP 服务的连接延迟"
 
     def execute(self, context):
@@ -75,7 +75,7 @@ class BLENDER_MCP_OT_PingTest(bpy.types.Operator):
             if result and result.get('success'):
                 latency = result.get('latency_ms', 0)
                 props.latency_ms = latency
-                self.report({'INFO'}, f"Ping 成功，延迟: {latency:.2f} ms")
+                self.report({'INFO'}, f"Ping 成功，延迟: {latency:.2f} 毫秒")
             else:
                 props.last_error = result.get('error', 'Ping 失败') if result else 'Ping 失败'
                 self.report({'ERROR'}, f"Ping 失败")
