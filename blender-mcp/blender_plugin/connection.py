@@ -12,6 +12,7 @@ from concurrent.futures import Future
 
 
 _ws_client: Optional['BlenderWSClient'] = None
+_command_handler: Optional[Any] = None
 
 
 def get_ws_client() -> 'BlenderWSClient':
@@ -21,6 +22,27 @@ def get_ws_client() -> 'BlenderWSClient':
     if _ws_client is None:
         _ws_client = BlenderWSClient()
     return _ws_client
+
+
+def get_command_handler() -> Any:
+    """获取命令处理器单例
+    """
+    global _command_handler
+    if _command_handler is None:
+        # 尝试导入核心模块
+        try:
+            import sys
+            from pathlib import Path
+            # 添加项目路径到 sys.path
+            addon_dir = Path(__file__).parent
+            project_root = addon_dir.parent
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+            from core.command import CommandHandler
+            _command_handler = CommandHandler()
+        except Exception as e:
+            print(f"加载 CommandHandler 失败: {e}")
+    return _command_handler
 
 
 class BlenderWSClient:
@@ -37,10 +59,18 @@ class BlenderWSClient:
         self._request_id = 0
         self._pending: Dict[str, Future] = {}
         self._running = False
+        self._handler = None
 
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def _init_handler(self) -> bool:
+        """延迟初始化命令处理器
+        """
+        if self._handler is None:
+            self._handler = get_command_handler()
+        return self._handler is not None
 
     def connect(self, host: str = "127.0.0.1", port: int = 8765) -> tuple[bool, Optional[str]]:
         """
@@ -173,7 +203,6 @@ class BlenderWSClient:
         """处理服务端消息
         """
         import bpy
-        import sys
 
         msg_type = data.get('type')
         msg_id = data.get('id')
@@ -181,6 +210,7 @@ class BlenderWSClient:
         if msg_type == 'request':
             action = data.get('action')
             payload = data.get('payload', {})
+
             if action == 'ping':
                 response = {
                     "id": msg_id,
@@ -199,15 +229,55 @@ class BlenderWSClient:
                 }
                 await self._ws.send(json.dumps(response))
             else:
-                response = {
-                    "id": msg_id,
-                    "type": "response",
-                    "action": action,
-                    "success": False,
-                    "error": {"code": "UNKNOWN_ACTION", "message": f"Unknown action"},
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                }
-                await self._ws.send(json.dumps(response))
+                # 尝试通过 CommandHandler 处理
+                try:
+                    if self._init_handler():
+                        handler_name = f"handle_{action}"
+                        handler = getattr(self._handler, handler_name, None)
+                        if handler and callable(handler):
+                            result = handler(payload)
+                            response = {
+                                "id": msg_id,
+                                "type": "response",
+                                "action": action,
+                                "success": result.get('success', False),
+                                "payload": result,
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
+                            }
+                            await self._ws.send(json.dumps(response))
+                        else:
+                            response = {
+                                "id": msg_id,
+                                "type": "response",
+                                "action": action,
+                                "success": False,
+                                "error": {"code": "UNKNOWN_ACTION", "message": f"Unknown action: {action}"},
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
+                            }
+                            await self._ws.send(json.dumps(response))
+                    else:
+                        response = {
+                            "id": msg_id,
+                            "type": "response",
+                            "action": action,
+                            "success": False,
+                            "error": {"code": "NO_HANDLER", "message": "CommandHandler not available"},
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
+                        }
+                        await self._ws.send(json.dumps(response))
+                except Exception as e:
+                    print(f"处理 action {action} 失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    response = {
+                        "id": msg_id,
+                        "type": "response",
+                        "action": action,
+                        "success": False,
+                        "error": {"code": "EXECUTE_ERROR", "message": str(e)},
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
+                    }
+                    await self._ws.send(json.dumps(response))
         elif msg_type == 'response' and msg_id in self._pending:
             future = self._pending.pop(msg_id)
             if not future.done():
@@ -219,3 +289,4 @@ class BlenderWSClient:
         for t in tasks:
             t.cancel()
         self._loop.call_soon_threadsafe(self._loop.stop())
+

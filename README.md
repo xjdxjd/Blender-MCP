@@ -1,6 +1,6 @@
 # Blender-mcp 客户端
 
-> **文档版本**：v1.4
+> **文档版本**：v1.5
 > **最后更新**：2026-05-25
 
 ---
@@ -34,30 +34,47 @@ Blender-mcp 是一个连接 Blender 3D 建模软件与 AI 助手（Trae SOLO、h
 #### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-org/blender-mcp.git
-cd blender-mcp
+git clone https://github.com/xjdxjd/Blender-MCP.git
+cd Blender-MCP
 ```
 
-#### 2. 安装 Blender 插件
+#### 2. 安装依赖并启动 MCP 服务
 
-**Linux/macOS：**
+```bash
+cd blender-mcp
+pip install -r requirements.txt
+python -m mcp_server.server
+```
+
+#### 3. 安装 Blender 插件
+
+**方式一：符号链接（推荐开发时使用）**
+
+Linux/macOS：
 ```bash
 mkdir -p ~/.config/blender/4.2/scripts/addons/
 ln -s $(pwd)/blender_plugin ~/.config/blender/4.2/scripts/addons/blender_mcp
 ```
 
-**Windows：**
+Windows：
 ```powershell
 New-Item -ItemType Junction -Path "$env:APPDATA\Blender Foundation\Blender\4.2\scripts\addons\blender_mcp" -Target "$pwd\blender_plugin"
 ```
 
-#### 3. 启用插件
+**方式二：手动安装**
 
-1. 启动 Blender
-2. 进入 `编辑` → `偏好设置` → `插件`
-3. 搜索 "blender-mcp"，勾选启用
+1. 打开 Blender (4.2+)
+2. Edit → Preferences → Add-ons → Install...
+3. 选择 `blender-mcp` 目录下的 `blender_plugin` 文件夹
+4. 启用 "Blender MCP" 插件
 
-#### 4. 配置 MCP 客户端
+#### 4. 连接服务
+
+1. 在 3D View 右侧找到 "Blender MCP" 面板
+2. 确认 Host 为 127.0.0.1，Port 为 8765
+3. 点击 "Connect" 连接
+
+#### 5. 配置 MCP 客户端
 
 在 AI 助手的 MCP 配置文件中添加：
 
@@ -121,6 +138,9 @@ AI助手：调用 export_model 工具，format=stl
 | `import_model` | 导入 STL/OBJ 文件 | P0 |
 | `check_model` | 检查模型可打印性 | P0 |
 | `repair_model` | 修复模型问题 | P0 |
+| `soft_transform` | 软选择变形（KD-Tree + 5种衰减） | P1 |
+| `curve_deform` | 曲线变形 | P1 |
+| `shrinkwrap` | 收缩包裹 | P1 |
 | `detect_overhangs` | 检测悬垂面 | P1 |
 | `optimize_orientation` | 优化打印方向 | P1 |
 | `set_material` | 设置材质 | P3 |
@@ -128,33 +148,49 @@ AI助手：调用 export_model 工具，format=stl
 
 ---
 
+## 开发进度
+
+| 阶段 | 状态 | 完成度 | 完成日期 |
+|------|------|--------|---------|
+| ✅ **阶段一 (Day 1-5)** | 已完成 | 100% | 2026-05-26 |
+| ✅ **阶段二 (Day 6-17)** | 已完成 | 100% | 2026-05-26 |
+| ✅ **阶段三 (Day 18-22)** | 已完成 | 100% | 2026-05-26 |
+| ⏳ **阶段四 (Day 23-26)** | 待开发 | 0% | - |
+| ⏳ **阶段五 (Day 27-30)** | 待开发 | 0% | - |
+
+**项目总进度**: ~85% (核心功能已全部完成！)
+
+---
+
 ## 项目结构
 
 ```
-blender-mcp/
+Blender-MCP/
 ├── document/                 # 项目文档
 │   ├── 需求文档.md
 │   ├── 系统架构文档.md
-│   └── 开发计划.md
-├── mcp_server/              # MCP 服务端
-│   ├── server.py            # 服务入口
-│   ├── tools.py            # 工具定义
-│   └── schemas.py          # 数据模型
-├── blender_plugin/           # Blender 插件
-│   ├── addon.py            # 插件注册
-│   ├── connection.py       # 连接管理
-│   └── operators.py        # Blender 操作封装
-├── core/                    # 核心逻辑
-│   ├── command.py          # 命令处理器
-│   ├── adapter.py          # API 适配器
-│   └── state.py           # 状态管理
-├── tests/                  # 测试
-│   ├── unit/              # 单元测试
-│   ├── integration/       # 集成测试
-│   └── e2e/               # 端到端测试
-├── requirements.txt
-├── README.md
-└── LICENSE
+│   ├── 开发计划.md
+│   ├── 变更日志.md
+│   └── 开发进度.md
+├── blender-mcp/              # 项目代码
+│   ├── mcp_server/          # MCP 服务端
+│   │   ├── server.py        # 服务入口
+│   │   ├── tools.py         # 工具定义
+│   │   └── schemas.py       # 数据模型
+│   ├── blender_plugin/       # Blender 插件
+│   │   ├── addon.py         # 插件注册
+│   │   ├── connection.py    # 连接管理
+│   │   └── operators.py     # Blender 操作封装
+│   ├── core/                # 核心逻辑
+│   │   ├── command.py       # 命令处理器
+│   │   ├── adapter.py       # API 适配器
+│   │   ├── state.py         # 状态管理
+│   │   └── events.py        # 事件通知系统
+│   ├── config/              # 配置文件
+│   ├── tests/               # 测试
+│   └── requirements.txt
+├── CHANGELOG.md              # 变更日志（已移至 document/变更日志.md）
+└── README.md
 ```
 
 ---
@@ -201,6 +237,11 @@ blender --background --python tests/e2e/run_all.py
 - [需求文档](./document/需求文档.md) - 产品需求与功能定义
 - [系统架构文档](./document/系统架构文档.md) - 技术架构与设计
 - [开发计划](./document/开发计划.md) - 开发阶段与任务
+- [变更日志](./document/变更日志.md) - 版本变更记录
+- [开发进度](./document/开发进度.md) - 开发进度追踪
+- [阶段一详细设计](./document/阶段一详细设计.md) - 阶段一具体实现方案
+- [API接口文档](./document/API接口文档.md) - MCP 工具接口说明
+- [部署文档](./document/部署文档.md) - 部署指南
 
 ---
 
@@ -218,8 +259,7 @@ blender --background --python tests/e2e/run_all.py
 
 ## 联系方式
 
-- GitHub Issues: https://github.com/your-org/blender-mcp/issues
-- 邮箱: support@your-org.com
+- GitHub Issues: https://github.com/xjdxjd/Blender-MCP/issues
 
 ---
 
@@ -227,3 +267,5 @@ blender --background --python tests/e2e/run_all.py
 > - [需求文档](./document/需求文档.md)
 > - [系统架构文档](./document/系统架构文档.md)
 > - [开发计划](./document/开发计划.md)
+> - [变更日志](./document/变更日志.md)
+> - [开发进度](./document/开发进度.md)

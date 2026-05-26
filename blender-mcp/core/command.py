@@ -249,3 +249,50 @@ class CommandHandler:
     def get_state_snapshot(self) -> Dict[str, Any]:
         """获取状态快照"""
         return self._state_manager.take_snapshot()
+
+    # === 材质工具 ===
+    def handle_set_material(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 set_material 命令"""
+        properties = params.get('properties', {})
+        return self._adapter.set_material(
+            object_id=params.get('object_id'),
+            material_name=params.get('material_name'),
+            preset=params.get('preset'),
+            replace=params.get('replace', False),
+            base_color=tuple(properties.get('base_color', (0.8, 0.8, 0.8, 1.0))),
+            metallic=properties.get('metallic', 0.0),
+            roughness=properties.get('roughness', 0.5),
+            specular=properties.get('specular', 0.5),
+            transmission=properties.get('transmission', 0.0),
+            emission_color=tuple(properties.get('emission_color')) if properties.get('emission_color') else None,
+            emission_strength=properties.get('emission_strength', 0.0),
+            alpha=properties.get('alpha', 1.0),
+        )
+
+    def handle_list_materials(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 list_materials 命令"""
+        return self._adapter.list_materials()
+
+    def handle_delete_material(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 delete_material 命令"""
+        return self._adapter.delete_material(
+            name=params.get('name')
+        )
+
+    # === 渲染工具 ===
+    def handle_render_scene(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理 render_scene 命令"""
+        resolution = params.get('resolution', [1920, 1080])
+        return self._adapter.render_scene(
+            engine=params.get('engine', 'CYCLES'),
+            resolution_x=resolution[0] if isinstance(resolution, list) else 1920,
+            resolution_y=resolution[1] if isinstance(resolution, list) else 1080,
+            resolution_percentage=params.get('resolution_percentage', 100),
+            output_path=params.get('output_path'),
+            file_format=params.get('file_format', 'PNG'),
+            color_mode=params.get('color_mode', 'RGBA'),
+            color_depth=params.get('color_depth', 8),
+            compression=params.get('compression', 15),
+            samples=params.get('samples'),
+            use_denoising=params.get('use_denoising', True),
+        )
