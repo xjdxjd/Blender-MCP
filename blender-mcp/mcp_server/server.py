@@ -234,8 +234,8 @@ class MCPServer:
         logger.info("MCPServer 启动中...")
         self._transport = StdioTransport(message_handler=self.handle_request)
 
-        # 注册阶段一工具
-        await self._register_phase1_tools()
+        # 注册所有阶段的工具
+        await self._register_all_tools()
 
         # 启动 WebSocket 服务器（等待 Blender 连接）
         ws_host = self._config.get('server', {}).get('host', '127.0.0.1')
@@ -334,9 +334,27 @@ class MCPServer:
                 del self._ws_pending[msg_id]
             raise ConnectionError(f"发送消息失败: {e}")
 
-    async def _register_phase1_tools(self):
-        """注册阶段一的工具。"""
+    async def _register_all_tools(self):
+        """注册所有阶段的工具。"""
 
+        # ==================== 通用工具注册工厂 ====================
+        async def create_generic_tool_handler(action: str, **fixed_payload):
+            async def handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+                request = {
+                    "id": generate_message_id(),
+                    "type": "request",
+                    "action": action,
+                    "payload": {**fixed_payload, **arguments},
+                    "timestamp": iso_now()
+                }
+                try:
+                    return await self.send_to_blender(request, timeout=30.0)
+                except Exception as e:
+                    logger.exception(f"{action} 工具调用失败")
+                    return {"success": False, "error": str(e)}
+            return handler
+
+        # ==================== 阶段一：ping ====================
         async def handle_ping(arguments: Dict[str, Any]) -> Dict[str, Any]:
             """ping 工具处理函数"""
             start_time = time.monotonic()
@@ -398,7 +416,470 @@ class MCPServer:
             input_schema=ping_schema,
             handler=handle_ping
         )
-        logger.info("已注册阶段一工具: ping")
+        logger.info("已注册: ping")
+
+        # ==================== 阶段二：基础工具 ====================
+        # create_object
+        create_object_schema = {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": ["mesh", "curve"], "description": "对象类型", "default": "mesh"},
+                "name": {"type": "string", "description": "对象名称（可选）"},
+                "mesh_type": {"type": "string", "enum": ["cube", "sphere", "cylinder", "plane", "cone", "torus"], "description": "网格类型", "default": "cube"},
+                "location": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "位置 (X,Y,Z)", "default": [0, 0, 0]},
+                "rotation": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "旋转 (X,Y,Z) 角度", "default": [0, 0, 0]},
+                "scale": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "缩放", "default": [1, 1, 1]}
+            },
+            "required": ["type"]
+        }
+        self._registry.register(
+            name="create_object",
+            description="在 Blender 中创建 3D 对象",
+            input_schema=create_object_schema,
+            handler=await create_generic_tool_handler("create_object")
+        )
+        logger.info("已注册: create_object")
+
+        # transform_object
+        transform_object_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "description": "对象名称或 ID", "required": True},
+                "mode": {"type": "string", "enum": ["absolute", "relative"], "description": "变换模式", "default": "relative"},
+                "location": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "位置变化/目标位置"},
+                "rotation": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "旋转变化/目标旋转（角度）"},
+                "scale": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "缩放变化/目标缩放"}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="transform_object",
+            description="移动、旋转或缩放对象",
+            input_schema=transform_object_schema,
+            handler=await create_generic_tool_handler("transform_object")
+        )
+        logger.info("已注册: transform_object")
+
+        # delete_object
+        delete_object_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "description": "对象名称或 ID", "required": True}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="delete_object",
+            description="删除场景中的对象",
+            input_schema=delete_object_schema,
+            handler=await create_generic_tool_handler("delete_object")
+        )
+        logger.info("已注册: delete_object")
+
+        # modify_mesh
+        modify_mesh_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "description": "对象名称", "required": True},
+                "operation": {"type": "string", "enum": ["boolean_union", "boolean_difference", "boolean_intersect", "bevel", "extrude", "solidify"], "description": "操作类型", "required": True},
+                "target_id": {"type": "string", "description": "布尔运算的目标对象"},
+                "properties": {"type": "object", "description": "操作属性，取决于 operation"}
+            },
+            "required": ["object_id", "operation"]
+        }
+        self._registry.register(
+            name="modify_mesh",
+            description="修改网格：布尔运算、倒角、挤出等",
+            input_schema=modify_mesh_schema,
+            handler=await create_generic_tool_handler("modify_mesh")
+        )
+        logger.info("已注册: modify_mesh")
+
+        # simple_deform
+        simple_deform_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "deform_type": {"type": "string", "enum": ["bend", "twist", "taper", "stretch"], "required": True},
+                "axis": {"type": "string", "enum": ["X", "Y", "Z"], "default": "Z"},
+                "factor": {"type": "number", "description": "变形强度", "default": 1.0},
+                "limits": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "default": [-1.0, 1.0]}
+            },
+            "required": ["object_id", "deform_type"]
+        }
+        self._registry.register(
+            name="simple_deform",
+            description="简单变形：弯曲、扭曲、锥化、拉伸",
+            input_schema=simple_deform_schema,
+            handler=await create_generic_tool_handler("simple_deform")
+        )
+        logger.info("已注册: simple_deform")
+
+        # mesh_sculpt
+        mesh_sculpt_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "operation": {"type": "string", "enum": ["push", "pull", "smooth", "inflate"], "required": True},
+                "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": [0, 0, 0]},
+                "radius": {"type": "number", "default": 1.0},
+                "strength": {"type": "number", "default": 0.1},
+                "falloff": {"type": "string", "enum": ["linear", "inverse", "constant", "gaussian", "root"], "default": "linear"},
+                "symmetry": {"type": "array", "items": {"type": "boolean"}, "minItems": 3, "maxItems": 3, "default": [False, False, False]}
+            },
+            "required": ["object_id", "operation"]
+        }
+        self._registry.register(
+            name="mesh_sculpt",
+            description="网格雕刻操作",
+            input_schema=mesh_sculpt_schema,
+            handler=await create_generic_tool_handler("mesh_sculpt")
+        )
+        logger.info("已注册: mesh_sculpt")
+
+        # soft_transform
+        soft_transform_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "transform_type": {"type": "string", "enum": ["translate", "rotate", "scale"], "required": True},
+                "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": [0, 0, 0]},
+                "radius": {"type": "number", "default": 1.0},
+                "displacement": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": [0, 0, 0]},
+                "falloff_type": {"type": "string", "enum": ["linear", "inverse", "constant", "gaussian", "root"], "default": "linear"}
+            },
+            "required": ["object_id", "transform_type"]
+        }
+        self._registry.register(
+            name="soft_transform",
+            description="带衰减的软选择变换",
+            input_schema=soft_transform_schema,
+            handler=await create_generic_tool_handler("soft_transform")
+        )
+        logger.info("已注册: soft_transform")
+
+        # curve_deform
+        curve_deform_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "curve_id": {"type": "string", "description": "用于变形的曲线对象", "required": True},
+                "axis": {"type": "string", "enum": ["X", "Y", "Z"], "default": "X"}
+            },
+            "required": ["object_id", "curve_id"]
+        }
+        self._registry.register(
+            name="curve_deform",
+            description="沿曲线变形对象",
+            input_schema=curve_deform_schema,
+            handler=await create_generic_tool_handler("curve_deform")
+        )
+        logger.info("已注册: curve_deform")
+
+        # shrinkwrap
+        shrinkwrap_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "target_id": {"type": "string", "required": True},
+                "wrap_method": {"type": "string", "enum": ["nearest_surface", "project", "nearest_vertex"], "default": "nearest_surface"},
+                "offset": {"type": "number", "default": 0.0}
+            },
+            "required": ["object_id", "target_id"]
+        }
+        self._registry.register(
+            name="shrinkwrap",
+            description="收缩包裹：将对象吸附到目标表面",
+            input_schema=shrinkwrap_schema,
+            handler=await create_generic_tool_handler("shrinkwrap")
+        )
+        logger.info("已注册: shrinkwrap")
+
+        # import_model
+        import_model_schema = {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "模型文件路径", "required": True},
+                "format": {"type": "string", "enum": ["stl", "obj", "fbx", "gltf"], "default": "stl"}
+            },
+            "required": ["file_path"]
+        }
+        self._registry.register(
+            name="import_model",
+            description="导入 STL/OBJ 等 3D 模型",
+            input_schema=import_model_schema,
+            handler=await create_generic_tool_handler("import_model")
+        )
+        logger.info("已注册: import_model")
+
+        # export_model
+        export_model_schema = {
+            "type": "object",
+            "properties": {
+                "object_ids": {"type": "array", "items": {"type": "string"}, "description": "要导出的对象 ID 列表，不传则导出全部选中对象"},
+                "file_path": {"type": "string", "description": "导出文件路径", "required": True},
+                "format": {"type": "string", "enum": ["stl", "obj", "fbx", "gltf"], "default": "stl"},
+                "export_selected": {"type": "boolean", "description": "仅导出选中对象", "default": True}
+            },
+            "required": ["file_path"]
+        }
+        self._registry.register(
+            name="export_model",
+            description="导出模型为 STL/OBJ 格式",
+            input_schema=export_model_schema,
+            handler=await create_generic_tool_handler("export_model")
+        )
+        logger.info("已注册: export_model")
+
+        # check_model
+        check_model_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="check_model",
+            description="检查模型的可打印性（非流形、法线、壁厚）",
+            input_schema=check_model_schema,
+            handler=await create_generic_tool_handler("check_model")
+        )
+        logger.info("已注册: check_model")
+
+        # repair_model
+        repair_model_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "auto_repair": {"type": "boolean", "description": "自动执行所有修复", "default": True},
+                "fix_flip_normals": {"type": "boolean", "description": "修复翻转法线", "default": True},
+                "fix_merge_vertices": {"type": "boolean", "description": "合并重复顶点", "default": True},
+                "fix_fill_holes": {"type": "boolean", "description": "填充孔洞", "default": True},
+                "merge_distance": {"type": "number", "description": "顶点合并距离", "default": 0.001}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="repair_model",
+            description="修复模型问题（翻转法线、合并顶点、填充孔洞）",
+            input_schema=repair_model_schema,
+            handler=await create_generic_tool_handler("repair_model")
+        )
+        logger.info("已注册: repair_model")
+
+        # detect_overhangs
+        detect_overhangs_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "overhang_angle": {"type": "number", "description": "最大悬垂角度（度）", "default": 45.0}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="detect_overhangs",
+            description="检测模型中的悬垂区域",
+            input_schema=detect_overhangs_schema,
+            handler=await create_generic_tool_handler("detect_overhangs")
+        )
+        logger.info("已注册: detect_overhangs")
+
+        # optimize_orientation
+        optimize_orientation_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="optimize_orientation",
+            description="优化模型打印方向",
+            input_schema=optimize_orientation_schema,
+            handler=await create_generic_tool_handler("optimize_orientation")
+        )
+        logger.info("已注册: optimize_orientation")
+
+        # set_shrinkage_compensation
+        shrinkage_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "compensation_factor": {"type": "number", "description": "收缩率补偿系数 (1.0 = 无补偿)", "default": 1.02},
+                "material": {"type": "string", "description": "材料类型", "enum": ["pla", "abs", "petg", "tpu"], "default": "pla"}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="set_shrinkage_compensation",
+            description="设置模型收缩率补偿",
+            input_schema=shrinkage_schema,
+            handler=await create_generic_tool_handler("set_shrinkage_compensation")
+        )
+        logger.info("已注册: set_shrinkage_compensation")
+
+        # validate_printability
+        validate_printability_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True}
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="validate_printability",
+            description="综合验证模型可打印性",
+            input_schema=validate_printability_schema,
+            handler=await create_generic_tool_handler("validate_printability")
+        )
+        logger.info("已注册: validate_printability")
+
+        # list_objects
+        list_objects_schema = {
+            "type": "object",
+            "properties": {
+                "type_filter": {"type": "string", "description": "按类型过滤: mesh/curve/...", "required": False}
+            },
+            "required": []
+        }
+        self._registry.register(
+            name="list_objects",
+            description="列出场景中的所有对象",
+            input_schema=list_objects_schema,
+            handler=await create_generic_tool_handler("list_objects")
+        )
+        logger.info("已注册: list_objects")
+
+        # get_scene_info
+        get_scene_info_schema = {"type": "object", "properties": {}, "required": []}
+        self._registry.register(
+            name="get_scene_info",
+            description="获取当前场景的基本信息",
+            input_schema=get_scene_info_schema,
+            handler=await create_generic_tool_handler("get_scene_info")
+        )
+        logger.info("已注册: get_scene_info")
+
+        # ==================== 阶段三：文件管理 ====================
+        # save_project
+        save_project_schema = {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "保存路径（可选，留空则保存到当前文件）"},
+                "backup": {"type": "boolean", "description": "是否备份旧文件", "default": True}
+            },
+            "required": []
+        }
+        self._registry.register(
+            name="save_project",
+            description="保存当前 Blender 项目",
+            input_schema=save_project_schema,
+            handler=await create_generic_tool_handler("save_project")
+        )
+        logger.info("已注册: save_project")
+
+        # open_project
+        open_project_schema = {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "required": True}
+            },
+            "required": ["file_path"]
+        }
+        self._registry.register(
+            name="open_project",
+            description="打开 Blender 项目文件",
+            input_schema=open_project_schema,
+            handler=await create_generic_tool_handler("open_project")
+        )
+        logger.info("已注册: open_project")
+
+        # ==================== 阶段四：材质与渲染 ====================
+        # set_material
+        set_material_schema = {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string", "required": True},
+                "material_name": {"type": "string", "description": "材质名称（可选，默认自动生成）"},
+                "preset": {"type": "string", "enum": ["plastic", "glossy_plastic", "metal", "chrome", "glass", "rubber", "ceramic", "wood"], "description": "材质预设"},
+                "replace": {"type": "boolean", "description": "是否替换对象现有材质", "default": False},
+                "properties": {
+                    "type": "object",
+                    "properties": {
+                        "base_color": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "default": [0.8, 0.8, 0.8, 1.0]},
+                        "metallic": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0},
+                        "roughness": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+                        "specular": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+                        "transmission": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0},
+                        "emission_color": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "自发光颜色"},
+                        "emission_strength": {"type": "number", "minimum": 0, "default": 0.0},
+                        "alpha": {"type": "number", "minimum": 0, "maximum": 1, "default": 1.0}
+                    }
+                }
+            },
+            "required": ["object_id"]
+        }
+        self._registry.register(
+            name="set_material",
+            description="设置对象材质（支持自定义属性或预设）",
+            input_schema=set_material_schema,
+            handler=await create_generic_tool_handler("set_material")
+        )
+        logger.info("已注册: set_material")
+
+        # list_materials
+        list_materials_schema = {"type": "object", "properties": {}, "required": []}
+        self._registry.register(
+            name="list_materials",
+            description="列出场景中所有材质",
+            input_schema=list_materials_schema,
+            handler=await create_generic_tool_handler("list_materials")
+        )
+        logger.info("已注册: list_materials")
+
+        # delete_material
+        delete_material_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要删除的材质名称", "required": True}
+            },
+            "required": ["name"]
+        }
+        self._registry.register(
+            name="delete_material",
+            description="删除材质（仅当无对象使用时）",
+            input_schema=delete_material_schema,
+            handler=await create_generic_tool_handler("delete_material")
+        )
+        logger.info("已注册: delete_material")
+
+        # render_scene
+        render_scene_schema = {
+            "type": "object",
+            "properties": {
+                "engine": {"type": "string", "enum": ["CYCLES", "EEVEE"], "default": "CYCLES"},
+                "resolution": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "default": [1920, 1080]},
+                "resolution_percentage": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "output_path": {"type": "string", "description": "输出文件路径（可选）"},
+                "file_format": {"type": "string", "enum": ["PNG", "JPEG", "TIFF", "OPEN_EXR"], "default": "PNG"},
+                "color_mode": {"type": "string", "enum": ["BW", "RGB", "RGBA"], "default": "RGBA"},
+                "color_depth": {"type": "integer", "enum": [8, 16, 32], "default": 8},
+                "compression": {"type": "integer", "minimum": 0, "maximum": 100, "default": 15},
+                "samples": {"type": "integer", "description": "采样数（可选）"},
+                "use_denoising": {"type": "boolean", "default": True}
+            },
+            "required": []
+        }
+        self._registry.register(
+            name="render_scene",
+            description="渲染场景为图像（支持 EEVEE/Cycles）",
+            input_schema=render_scene_schema,
+            handler=await create_generic_tool_handler("render_scene")
+        )
+        logger.info("已注册: render_scene")
+
+        logger.info(f"所有工具注册完成！总共 {len(self._registry.list_tools())} 个工具")
 
     async def _handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """处理 initialize 请求"""
