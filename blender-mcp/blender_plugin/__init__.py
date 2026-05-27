@@ -1,74 +1,63 @@
-"""
-Blender MCP Plugin - 插件入口
-通过 MCP 协议连接 Blender 和 AI 助手
-"""
+# Blender MCP Plugin
+# 通过 MCP 协议连接 Blender 和 AI 助手
 
 import bpy
-from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty, FloatProperty
-from bpy.types import PropertyGroup
+from bpy.types import Panel, Operator, PropertyGroup
+from bpy.props import (
+    StringProperty,
+    IntProperty,
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    PointerProperty,
+)
 
 bl_info = {
     "name": "Blender MCP",
-    "author": "Blender-mcp 项目团队",
+    "author": "Blender-mcp",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Blender MCP",
     "description": "通过 MCP 协议连接 Blender 和 AI 助手",
     "category": "System",
     "support": "COMMUNITY",
-    "doc_url": "https://github.com/blender-mcp/blender-mcp",
 }
 
 
 class BlenderMCPProperties(PropertyGroup):
-    """插件属性组"""
-
     host: StringProperty(
         name="主机地址",
         default="127.0.0.1",
-        description="MCP 服务 WebSocket 地址"
+        description="MCP 服务地址"
     )
-
     port: IntProperty(
         name="端口",
         default=8765,
         min=1024,
         max=65535,
-        description="MCP 服务 WebSocket 端口"
+        description="MCP 服务端口"
     )
-
     auto_connect: BoolProperty(
         name="自动连接",
         default=False,
-        description="启用插件时自动连接"
+        description="启用时自动连接"
     )
-
     connection_status: EnumProperty(
         name="状态",
         items=[
-            ('DISCONNECTED', '未连接', '未连接'),
-            ('CONNECTING', '连接中', '正在连接'),
-            ('CONNECTED', '已连接', '已连接'),
-            ('RECONNECTING', '重连中', '重新连接中'),
-            ('ERROR', '错误', '连接错误'),
+            ('DISCONNECTED', '未连接', ''),
+            ('CONNECTING', '连接中', ''),
+            ('CONNECTED', '已连接', ''),
+            ('RECONNECTING', '重连中', ''),
+            ('ERROR', '错误', ''),
         ],
         default='DISCONNECTED',
     )
-
-    last_error: StringProperty(
-        name="最后错误",
-        default=""
-    )
-
-    latency_ms: FloatProperty(
-        name="延迟",
-        default=0.0,
-        description="最近一次 ping 延迟（毫秒）"
-    )
+    last_error: StringProperty(name="错误信息", default="")
+    latency_ms: FloatProperty(name="延迟(毫秒)", default=0.0)
 
 
-class BLENDER_MCP_OT_StartServer(bpy.types.Operator):
-    """启动 WebSocket 连接"""
+class BLENDER_MCP_OT_StartServer(Operator):
     bl_idname = "blender_mcp.start_server"
     bl_label = "连接"
     bl_description = "连接到 MCP 服务"
@@ -76,32 +65,26 @@ class BLENDER_MCP_OT_StartServer(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.blender_mcp_props
         from . import connection
-        client = connection.get_ws_client()
-
+        ws = connection.get_ws_client()
         try:
             props.connection_status = 'CONNECTING'
             props.last_error = ""
-            success, error_msg = client.connect(
-                host=props.host,
-                port=props.port
-            )
-            if success:
+            ok, err = ws.connect(props.host, props.port)
+            if ok:
                 props.connection_status = 'CONNECTED'
-                self.report({'INFO'}, f"已连接到 MCP 服务")
+                self.report({'INFO'}, "已连接到 MCP 服务")
             else:
                 props.connection_status = 'ERROR'
-                props.last_error = error_msg or "连接失败"
-                self.report({'ERROR'}, f"连接失败: {error_msg}")
+                props.last_error = err or "连接失败"
+                self.report({'ERROR'}, f"连接失败: {err}")
         except Exception as e:
             props.connection_status = 'ERROR'
             props.last_error = str(e)
             self.report({'ERROR'}, f"连接异常: {e}")
-
         return {'FINISHED'}
 
 
-class BLENDER_MCP_OT_StopServer(bpy.types.Operator):
-    """断开 WebSocket 连接"""
+class BLENDER_MCP_OT_StopServer(Operator):
     bl_idname = "blender_mcp.stop_server"
     bl_label = "断开连接"
     bl_description = "断开与 MCP 服务的连接"
@@ -109,47 +92,41 @@ class BLENDER_MCP_OT_StopServer(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.blender_mcp_props
         from . import connection
-        client = connection.get_ws_client()
+        ws = connection.get_ws_client()
         try:
-            client.disconnect()
+            ws.disconnect()
             props.connection_status = 'DISCONNECTED'
             props.last_error = ""
             self.report({'INFO'}, "已断开连接")
         except Exception as e:
             self.report({'ERROR'}, f"断开失败: {e}")
-
         return {'FINISHED'}
 
 
-class BLENDER_MCP_OT_PingTest(bpy.types.Operator):
-    """执行 ping 测试"""
+class BLENDER_MCP_OT_PingTest(Operator):
     bl_idname = "blender_mcp.ping_test"
     bl_label = "Ping 测试"
-    bl_description = "测试与 MCP 服务的连接延迟"
+    bl_description = "测试与 MCP 服务的延迟"
 
     def execute(self, context):
         props = context.scene.blender_mcp_props
         from . import connection
-        client = connection.get_ws_client()
-
+        ws = connection.get_ws_client()
         try:
-            result = client.ping()
+            result = ws.ping()
             if result and result.get('success'):
-                latency = result.get('latency_ms', 0)
-                props.latency_ms = latency
-                self.report({'INFO'}, f"Ping 成功，延迟: {latency:.2f} 毫秒")
+                props.latency_ms = result.get('latency_ms', 0)
+                self.report({'INFO'}, f"Ping: {props.latency_ms:.1f}ms")
             else:
-                props.last_error = result.get('error', 'Ping 失败') if result else 'Ping 失败'
-                self.report({'ERROR'}, f"Ping 失败")
+                props.last_error = "Ping 失败"
+                self.report({'ERROR'}, "Ping 失败")
         except Exception as e:
             props.last_error = str(e)
             self.report({'ERROR'}, f"Ping 异常: {e}")
-
         return {'FINISHED'}
 
 
-class BLENDER_MCP_PT_ConnectionPanel(bpy.types.Panel):
-    """Blender MCP 连接管理面板"""
+class BLENDER_MCP_PT_ConnectionPanel(Panel):
     bl_label = "Blender MCP"
     bl_idname = "BLENDER_MCP_PT_connection"
     bl_space_type = 'VIEW_3D'
@@ -158,83 +135,65 @@ class BLENDER_MCP_PT_ConnectionPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.blender_mcp_props
+        p = context.scene.blender_mcp_props
 
         layout.label(text="连接状态：")
-
-        status_color_map = {
-            'DISCONNECTED': ('SEQUENCE_COLOR_01', '未连接'),
-            'CONNECTING': ('SEQUENCE_COLOR_09', '连接中...'),
-            'CONNECTED': ('SEQUENCE_COLOR_04', '已连接'),
-            'RECONNECTING': ('SEQUENCE_COLOR_09', '重连中...'),
-            'ERROR': ('SEQUENCE_COLOR_01', '错误')
+        status_map = {
+            'DISCONNECTED':  '未连接',
+            'CONNECTING':    '连接中...',
+            'CONNECTED':     '已连接',
+            'RECONNECTING':  '重连中...',
+            'ERROR':         '错误',
         }
-
-        icon, status_text = status_color_map.get(props.connection_status)
-        row = layout.row()
-        row.label(text=status_text, icon=icon)
+        layout.label(text=status_map.get(p.connection_status, '未知'))
 
         layout.separator()
         box = layout.box()
         box.label(text="服务器设置", icon='PREFERENCES')
-        box.prop(props, "host")
-        box.prop(props, "port")
-        box.prop(props, "auto_connect")
+        box.prop(p, "host")
+        box.prop(p, "port")
+        box.prop(p, "auto_connect")
 
         layout.separator()
-        btn_row = layout.row(align=True)
-        if props.connection_status == 'CONNECTED':
-            btn_row.operator("blender_mcp.stop_server", text="断开连接", icon='X')
+        row = layout.row(align=True)
+        if p.connection_status == 'CONNECTED':
+            row.operator("blender_mcp.stop_server", text="断开连接", icon='X')
         else:
-            btn_row.operator("blender_mcp.start_server", text="连接", icon='PLAY')
+            row.operator("blender_mcp.start_server", text="连接", icon='PLAY')
 
-        test_row = layout.row()
-        test_row.enabled = props.connection_status == 'CONNECTED'
-        test_row.operator("blender_mcp.ping_test", text="Ping 测试", icon='CONSOLE')
+        row2 = layout.row()
+        row2.enabled = (p.connection_status == 'CONNECTED')
+        row2.operator("blender_mcp.ping_test", text="Ping 测试")
 
-        if props.connection_status == 'CONNECTED':
-            latency_row = layout.row()
-            latency_row.label(text=f"延迟：{props.latency_ms:.2f} 毫秒")
+        if p.connection_status == 'CONNECTED':
+            layout.label(text=f"延迟: {p.latency_ms:.2f} 毫秒")
 
-        if props.last_error:
-            error_box = layout.box()
-            error_box.alert = True
-            error_box.label(text="错误：", icon='ERROR')
-            error_row = error_box.row()
-            error_row.label(text=props.last_error, translate=False)
-
-
-_classes = [
-    BlenderMCPProperties,
-    BLENDER_MCP_OT_StartServer,
-    BLENDER_MCP_OT_StopServer,
-    BLENDER_MCP_OT_PingTest,
-    BLENDER_MCP_PT_ConnectionPanel,
-]
+        if p.last_error:
+            box2 = layout.box()
+            box2.alert = True
+            box2.label(text=f"错误: {p.last_error}")
 
 
 def register():
-    """注册插件"""
-    for cls in _classes:
-        bpy.utils.register_class(cls)
-
-    bpy.types.Scene.blender_mcp_props = bpy.props.PointerProperty(
-        type=BlenderMCPProperties
-    )
-
+    bpy.utils.register_class(BlenderMCPProperties)
+    bpy.utils.register_class(BLENDER_MCP_OT_StartServer)
+    bpy.utils.register_class(BLENDER_MCP_OT_StopServer)
+    bpy.utils.register_class(BLENDER_MCP_OT_PingTest)
+    bpy.utils.register_class(BLENDER_MCP_PT_ConnectionPanel)
+    bpy.types.Scene.blender_mcp_props = PointerProperty(type=BlenderMCPProperties)
     print("Blender MCP 插件已注册")
 
 
 def unregister():
-    """注销插件"""
     from . import connection
-    ws_client = connection.get_ws_client()
-    if ws_client and ws_client.is_connected:
-        ws_client.disconnect()
+    ws = connection.get_ws_client()
+    if ws and ws.is_connected:
+        ws.disconnect()
 
-    for cls in reversed(_classes):
-        bpy.utils.unregister_class(cls)
-
+    bpy.utils.unregister_class(BLENDER_MCP_PT_ConnectionPanel)
+    bpy.utils.unregister_class(BLENDER_MCP_OT_PingTest)
+    bpy.utils.unregister_class(BLENDER_MCP_OT_StopServer)
+    bpy.utils.unregister_class(BLENDER_MCP_OT_StartServer)
+    bpy.utils.unregister_class(BlenderMCPProperties)
     del bpy.types.Scene.blender_mcp_props
-
     print("Blender MCP 插件已注销")
