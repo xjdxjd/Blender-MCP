@@ -1,11 +1,16 @@
 """
 Blender MCP Plugin - WebSocket 连接管理
+使用 Python 内置 socket 实现，无需安装第三方包
 """
 
-import asyncio
 import json
+import socket
+import struct
 import threading
 import time
+import hashlib
+import base64
+import os
 import sys
 from typing import Optional, Dict, Any
 from concurrent.futures import Future
@@ -16,8 +21,6 @@ _command_handler: Optional[Any] = None
 
 
 def get_ws_client() -> 'BlenderWSClient':
-    """获取单例实例
-    """
     global _ws_client
     if _ws_client is None:
         _ws_client = BlenderWSClient()
@@ -25,15 +28,10 @@ def get_ws_client() -> 'BlenderWSClient':
 
 
 def get_command_handler() -> Any:
-    """获取命令处理器单例
-    """
     global _command_handler
     if _command_handler is None:
-        # 尝试导入核心模块
         try:
-            import sys
             from pathlib import Path
-            # 添加项目路径到 sys.path
             addon_dir = Path(__file__).parent
             project_root = addon_dir.parent
             if str(project_root) not in sys.path:
@@ -45,80 +43,209 @@ def get_command_handler() -> Any:
     return _command_handler
 
 
-class BlenderWSClient:
-    """Blender 端 WebSocket 客户端，与 MCP 服务通信
-    """
+class WebSocketFrame:
+    OPCODE_TEXT = 0x1
+    OPCODE_BINARY = 0x2
+    OPCODE_CLOSE = 0x8
+    OPCODE_PING = 0x9
+    OPCODE_PONG = 0xA
 
+    @staticmethod
+    def encode(data: str, opcode: int = 0x1, mask: bool = True) -> bytes:
+        payload = data.encode('utf-8') if isinstance(data, str) else data
+        frame = bytearray()
+        frame.append(0x80 | opcode)
+
+        length = len(payload)
+        mask_bit = 0x80 if mask else 0x00
+
+        if length < 126:
+            frame.append(mask_bit | length)
+        elif length < 65536:
+            frame.append(mask_bit | 126)
+            frame.extend(struct.pack('!H', length))
+        else:
+            frame.append(mask_bit | 127)
+            frame.extend(struct.pack('!Q', length))
+
+        if mask:
+            mask_key = os.urandom(4)
+            frame.extend(mask_key)
+            masked = bytearray(payload)
+            for i in range(len(masked)):
+                masked[i] ^= mask_key[i % 4]
+            frame.extend(masked)
+        else:
+            frame.extend(payload)
+
+        return bytes(frame)
+
+    @staticmethod
+    def recv(sock: socket.socket) -> Optional[tuple]:
+        try:
+            header = _recv_exact(sock, 2)
+            if not header:
+                return None
+
+            opcode = header[0] & 0x0F
+            masked = bool(header[1] & 0x80)
+            length = header[1] & 0x7F
+
+            if length == 126:
+                data = _recv_exact(sock, 2)
+                if not data:
+                    return None
+                length = struct.unpack('!H', data)[0]
+            elif length == 127:
+                data = _recv_exact(sock, 8)
+                if not data:
+                    return None
+                length = struct.unpack('!Q', data)[0]
+
+            mask_key = None
+            if masked:
+                mask_key = _recv_exact(sock, 4)
+                if not mask_key:
+                    return None
+
+            payload = _recv_exact(sock, length)
+            if payload is None:
+                return None
+
+            if masked and mask_key:
+                payload = bytearray(payload)
+                for i in range(len(payload)):
+                    payload[i] ^= mask_key[i % 4]
+                payload = bytes(payload)
+
+            return (opcode, payload)
+        except Exception:
+            return None
+
+
+def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
+    data = bytearray()
+    while len(data) < n:
+        try:
+            chunk = sock.recv(n - len(data))
+            if not chunk:
+                return None
+            data.extend(chunk)
+        except socket.timeout:
+            return None
+        except Exception:
+            return None
+    return bytes(data)
+
+
+class BlenderWSClient:
     def __init__(self):
-        self._ws = None
+        self._sock: Optional[socket.socket] = None
         self._host = "127.0.0.1"
         self._port = 8765
         self._connected = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
+        self._recv_thread: Optional[threading.Thread] = None
+        self._running = False
         self._request_id = 0
         self._pending: Dict[str, Future] = {}
-        self._running = False
         self._handler = None
+        self._lock = threading.Lock()
 
     @property
     def is_connected(self) -> bool:
         return self._connected
 
     def _init_handler(self) -> bool:
-        """延迟初始化命令处理器
-        """
         if self._handler is None:
             self._handler = get_command_handler()
         return self._handler is not None
 
-    def connect(self, host: str = "127.0.0.1", port: int = 8765) -> tuple[bool, Optional[str]]:
-        """
-        建立 WebSocket 连接（同步调用，内部通过线程
-        """
+    def connect(self, host: str = "127.0.0.1", port: int = 8765) -> tuple:
         self._host = host
         self._port = port
 
-        if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(target=self._run_loop, daemon=True)
-            self._thread.start()
-
-        future = Future()
-
-        self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._async_connect(future))
-        )
-
         try:
-            result = future.result(timeout=10)
-            return result
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect((self._host, self._port))
+
+            ws_key = base64.b64encode(os.urandom(16)).decode('ascii')
+            handshake = (
+                f"GET / HTTP/1.1\r\n"
+                f"Host: {self._host}:{self._port}\r\n"
+                f"Upgrade: websocket\r\n"
+                f"Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                f"Sec-WebSocket-Version: 13\r\n"
+                f"\r\n"
+            )
+            sock.sendall(handshake.encode('utf-8'))
+
+            response = b""
+            while b"\r\n\r\n" not in response:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    sock.close()
+                    return False, "WebSocket 握手失败"
+                response += chunk
+
+            if b"101" not in response.split(b"\r\n")[0]:
+                sock.close()
+                return False, "WebSocket 握手被拒绝"
+
+            sock.settimeout(0.1)
+            self._sock = sock
+            self._connected = True
+            self._running = True
+
+            self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
+            self._recv_thread.start()
+
+            return True, None
+
+        except socket.timeout:
+            return False, "连接超时"
+        except ConnectionRefusedError:
+            return False, "连接被拒绝，请确认 MCP 服务已启动"
         except Exception as e:
             return False, str(e)
 
     def disconnect(self) -> None:
-        """断开连接"""
+        self._running = False
         self._connected = False
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._stop_loop)
-        self._ws = None
+
+        if self._sock:
+            try:
+                close_frame = WebSocketFrame.encode("", opcode=WebSocketFrame.OPCODE_CLOSE, mask=True)
+                self._sock.sendall(close_frame)
+            except Exception:
+                pass
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
     def send_request(self, message: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
-        """同步发送请求（主线程调用
-        """
-        if not self._connected or self._loop is None:
+        if not self._connected or not self._sock:
             raise ConnectionError("未连接")
 
-        future = Future()
-        msg_id = f"{self._request_id}"
-        self._request_id += 1
-        message['id'] = msg_id
+        with self._lock:
+            msg_id = f"{self._request_id}"
+            self._request_id += 1
 
+        message['id'] = msg_id
+        future = Future()
         self._pending[msg_id] = future
 
-        self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._async_send(message))
-        )
+        try:
+            data = json.dumps(message)
+            frame = WebSocketFrame.encode(data)
+            self._sock.sendall(frame)
+        except Exception as e:
+            if msg_id in self._pending:
+                del self._pending[msg_id]
+            raise ConnectionError(f"发送失败: {e}")
 
         try:
             return future.result(timeout=timeout)
@@ -128,165 +255,130 @@ class BlenderWSClient:
             raise e
 
     def ping(self) -> Dict[str, Any]:
-        """内部 ping 响应生成
-        """
         import bpy
-        import sys
-        return {
-            "id": "ping-resp",
-            "type": "response",
-            "action": "ping",
-            "success": True,
-            "payload": {
-                "success": True,
-                "blender_version": bpy.app.version_string,
-                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                "scene_objects": len(bpy.context.scene.objects),
-                "mode": bpy.context.mode,
-                "message": ""
-            },
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-        }
-
-    def _run_loop(self) -> None:
-        """后台线程运行事件循环
-        """
-        asyncio.set_event_loop(self._loop)
+        start = time.monotonic()
         try:
-            self._loop.run_forever()
-        except Exception:
-            pass
-
-    async def _async_connect(self, result_future: Future) -> None:
-        """内部异步连接实现
-        """
-        try:
-            uri = f"ws://{self._host}:{self._port}"
-            import websockets
-            self._ws = await websockets.connect(uri)
-            self._connected = True
-            self._running = True
-
-            asyncio.create_task(self._message_handler())
-            result_future.set_result((True, None))
+            request = {
+                "id": f"ping-{self._request_id}",
+                "type": "request",
+                "action": "ping",
+                "payload": {"message": ""},
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            result = self.send_request(request, timeout=5.0)
+            latency = (time.monotonic() - start) * 1000
+            if result.get('success') or (result.get('payload', {}).get('success')):
+                payload = result.get('payload', result)
+                payload['latency_ms'] = round(latency, 2)
+                payload['success'] = True
+                return payload
+            else:
+                return {"success": False, "error": result.get('error', 'Ping 失败')}
         except Exception as e:
-            result_future.set_result((False, str(e)))
+            latency = (time.monotonic() - start) * 1000
+            return {"success": False, "latency_ms": round(latency, 2), "error": str(e)}
 
-    async def _async_send(self, message: Dict[str, Any]) -> None:
-        """发送到服务端
-        """
-        if not self._ws:
-            return
+    def _recv_loop(self) -> None:
+        while self._running and self._sock:
+            result = WebSocketFrame.recv(self._sock)
+            if result is None:
+                if self._running:
+                    self._connected = False
+                break
 
-        try:
-            await self._ws.send(json.dumps(message))
-        except Exception as e:
-            print(f"发送失败: {e}")
+            opcode, payload = result
 
-    async def _message_handler(self) -> None:
-        """消息接收处理循环
-        """
-        try:
-            async for raw_msg in self._ws:
+            if opcode == WebSocketFrame.OPCODE_TEXT:
                 try:
-                    data = json.loads(raw_msg)
-                    await self._on_message(data)
+                    data = json.loads(payload.decode('utf-8'))
+                    self._on_message(data)
                 except Exception as e:
-                    print(f"解析失败: {e}")
-        except Exception as e:
-            if self._connected:
-                print(f"连接错误: {e}")
-        finally:
-            self._connected = False
+                    print(f"解析消息失败: {e}")
 
-    async def _on_message(self, data: Dict[str, Any]) -> None:
-        """处理服务端消息
-        """
-        import bpy
+            elif opcode == WebSocketFrame.OPCODE_PING:
+                try:
+                    pong = WebSocketFrame.encode(payload, opcode=WebSocketFrame.OPCODE_PONG, mask=True)
+                    self._sock.sendall(pong)
+                except Exception:
+                    pass
 
+            elif opcode == WebSocketFrame.OPCODE_CLOSE:
+                self._connected = False
+                self._running = False
+                break
+
+        self._connected = False
+
+    def _on_message(self, data: Dict[str, Any]) -> None:
         msg_type = data.get('type')
         msg_id = data.get('id')
 
         if msg_type == 'request':
             action = data.get('action')
             payload = data.get('payload', {})
+            response = self._handle_action(msg_id, action, payload)
+            self._send_response(response)
 
-            if action == 'ping':
-                response = {
-                    "id": msg_id,
-                    "type": "response",
-                    "action": "ping",
-                    "success": True,
-                    "payload": {
-                        "success": True,
-                        "blender_version": bpy.app.version_string,
-                        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                        "scene_objects": len(bpy.context.scene.objects),
-                        "mode": bpy.context.mode,
-                        "message": payload.get('message', '')
-                    },
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                }
-                await self._ws.send(json.dumps(response))
-            else:
-                # 尝试通过 CommandHandler 处理
-                try:
-                    if self._init_handler():
-                        handler_name = f"handle_{action}"
-                        handler = getattr(self._handler, handler_name, None)
-                        if handler and callable(handler):
-                            result = handler(payload)
-                            response = {
-                                "id": msg_id,
-                                "type": "response",
-                                "action": action,
-                                "success": result.get('success', False),
-                                "payload": result,
-                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                            }
-                            await self._ws.send(json.dumps(response))
-                        else:
-                            response = {
-                                "id": msg_id,
-                                "type": "response",
-                                "action": action,
-                                "success": False,
-                                "error": {"code": "UNKNOWN_ACTION", "message": f"Unknown action: {action}"},
-                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                            }
-                            await self._ws.send(json.dumps(response))
-                    else:
-                        response = {
-                            "id": msg_id,
-                            "type": "response",
-                            "action": action,
-                            "success": False,
-                            "error": {"code": "NO_HANDLER", "message": "CommandHandler not available"},
-                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                        }
-                        await self._ws.send(json.dumps(response))
-                except Exception as e:
-                    print(f"处理 action {action} 失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    response = {
-                        "id": msg_id,
-                        "type": "response",
-                        "action": action,
-                        "success": False,
-                        "error": {"code": "EXECUTE_ERROR", "message": str(e)},
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime())
-                    }
-                    await self._ws.send(json.dumps(response))
         elif msg_type == 'response' and msg_id in self._pending:
             future = self._pending.pop(msg_id)
             if not future.done():
                 future.set_result(data)
 
-    def _stop_loop(self) -> None:
-        self._running = False
-        tasks = [t for t in asyncio.all_tasks(self._loop)]
-        for t in tasks:
-            t.cancel()
-        self._loop.call_soon_threadsafe(self._loop.stop())
+    def _handle_action(self, msg_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        import bpy
 
+        if action == 'ping':
+            return {
+                "id": msg_id,
+                "type": "response",
+                "action": "ping",
+                "success": True,
+                "payload": {
+                    "success": True,
+                    "blender_version": bpy.app.version_string,
+                    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                    "scene_objects": len(bpy.context.scene.objects),
+                    "mode": bpy.context.mode,
+                    "message": payload.get('message', ''),
+                },
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+
+        try:
+            if self._init_handler():
+                handler_name = f"handle_{action}"
+                handler = getattr(self._handler, handler_name, None)
+                if handler and callable(handler):
+                    result = handler(payload)
+                    return {
+                        "id": msg_id,
+                        "type": "response",
+                        "action": action,
+                        "success": result.get('success', False),
+                        "payload": result,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+        except Exception as e:
+            print(f"处理 {action} 失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "id": msg_id,
+            "type": "response",
+            "action": action,
+            "success": False,
+            "error": {"code": "NO_HANDLER", "message": f"无法处理: {action}"},
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+    def _send_response(self, response: Dict[str, Any]) -> None:
+        if not self._sock or not self._connected:
+            return
+        try:
+            data = json.dumps(response)
+            frame = WebSocketFrame.encode(data)
+            with self._lock:
+                self._sock.sendall(frame)
+        except Exception as e:
+            print(f"发送响应失败: {e}")
