@@ -12,12 +12,12 @@ import hashlib
 import base64
 import os
 import sys
+import bpy
 from typing import Optional, Dict, Any
 from concurrent.futures import Future
 
 
 _ws_client: Optional['BlenderWSClient'] = None
-_command_handler: Optional[Any] = None
 
 
 def get_ws_client() -> 'BlenderWSClient':
@@ -25,22 +25,6 @@ def get_ws_client() -> 'BlenderWSClient':
     if _ws_client is None:
         _ws_client = BlenderWSClient()
     return _ws_client
-
-
-def get_command_handler() -> Any:
-    global _command_handler
-    if _command_handler is None:
-        try:
-            from pathlib import Path
-            addon_dir = Path(__file__).parent
-            project_root = addon_dir.parent
-            if str(project_root) not in sys.path:
-                sys.path.insert(0, str(project_root))
-            from core.command import CommandHandler
-            _command_handler = CommandHandler()
-        except Exception as e:
-            print(f"加载 CommandHandler 失败: {e}")
-    return _command_handler
 
 
 class WebSocketFrame:
@@ -138,6 +122,161 @@ def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
     return bytes(data)
 
 
+class SimpleBlenderHandler:
+    """简化的 Blender 命令处理器，直接处理基本操作"""
+
+    def __init__(self):
+        pass
+
+    def handle_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        handler_name = f"handle_{action}"
+        handler = getattr(self, handler_name, None)
+        if handler and callable(handler):
+            try:
+                return handler(payload)
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+        return {
+            "success": False,
+            "error": f"未知动作: {action}"
+        }
+
+    def handle_ping(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "success": True,
+            "blender_version": bpy.app.version_string,
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "scene_objects": len(bpy.context.scene.objects),
+            "mode": bpy.context.mode,
+            "message": payload.get('message', ''),
+        }
+
+    def handle_list_objects(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            objects = []
+            for obj in bpy.context.scene.objects:
+                objects.append({
+                    "name": obj.name_full,
+                    "type": obj.type,
+                    "location": list(obj.location),
+                    "visible": obj.visible_get(),
+                })
+            return {
+                "success": True,
+                "count": len(objects),
+                "objects": objects
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def handle_get_scene_info(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            scene = bpy.context.scene
+            return {
+                "success": True,
+                "scene_name": scene.name_full,
+                "frame_current": scene.frame_current,
+                "frame_start": scene.frame_start,
+                "frame_end": scene.frame_end,
+                "object_count": len(scene.objects),
+                "selected_objects": [
+                    obj.name_full for obj in bpy.context.selected_objects
+                ],
+                "active_object": (
+                    bpy.context.active_object.name_full
+                    if bpy.context.active_object else None
+                )
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def handle_create_object(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            obj_type = payload.get('type', 'mesh')
+            name = payload.get('name', 'NewObject')
+            location = tuple(payload.get('location', [0.0, 0.0, 0.0]))
+
+            if obj_type == 'mesh':
+                mesh_type = payload.get('mesh_type', 'cube')
+                if mesh_type == 'cube':
+                    bpy.ops.mesh.primitive_cube_add(size=2.0, location=location)
+                elif mesh_type == 'sphere':
+                    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, location=location)
+                elif mesh_type == 'cylinder':
+                    bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.0, location=location)
+                elif mesh_type == 'cone':
+                    bpy.ops.mesh.primitive_cone_add(radius1=1.0, depth=2.0, location=location)
+                elif mesh_type == 'plane':
+                    bpy.ops.mesh.primitive_plane_add(size=2.0, location=location)
+                elif mesh_type == 'torus':
+                    bpy.ops.mesh.primitive_torus_add(
+                        major_radius=1.0,
+                        minor_radius=0.25,
+                        location=location
+                    )
+                else:
+                    return {"success": False, "error": f"未知的 mesh_type: {mesh_type}"}
+
+                obj = bpy.context.active_object
+                if obj and name:
+                    obj.name = name
+                return {
+                    "success": True,
+                    "object_name": obj.name_full if obj else None,
+                }
+            else:
+                return {"success": False, "error": f"不支持的类型: {obj_type}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def handle_delete_object(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            object_name = payload.get('object_name')
+            if not object_name:
+                return {"success": False, "error": "未指定 object_name"}
+
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"success": False, "error": f"找不到对象: {object_name}"}
+
+            bpy.data.objects.remove(obj, do_unlink=True)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def handle_transform_object(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            object_name = payload.get('object_name')
+            if not object_name:
+                return {"success": False, "error": "未指定 object_name"}
+
+            obj = bpy.data.objects.get(object_name)
+            if not obj:
+                return {"success": False, "error": f"找不到对象: {object_name}"}
+
+            if 'location' in payload:
+                obj.location = tuple(payload['location'])
+            if 'rotation' in payload:
+                rotation = payload['rotation']
+                if len(rotation) == 3:
+                    obj.rotation_euler = tuple(rotation)
+            if 'scale' in payload:
+                obj.scale = tuple(payload['scale'])
+
+            return {
+                "success": True,
+                "object_name": obj.name_full,
+                "location": list(obj.location),
+                "rotation": list(obj.rotation_euler),
+                "scale": list(obj.scale),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
 class BlenderWSClient:
     def __init__(self):
         self._sock: Optional[socket.socket] = None
@@ -148,17 +287,12 @@ class BlenderWSClient:
         self._running = False
         self._request_id = 0
         self._pending: Dict[str, Future] = {}
-        self._handler = None
+        self._handler: Optional[SimpleBlenderHandler] = None
         self._lock = threading.Lock()
 
     @property
     def is_connected(self) -> bool:
         return self._connected
-
-    def _init_handler(self) -> bool:
-        if self._handler is None:
-            self._handler = get_command_handler()
-        return self._handler is not None
 
     def connect(self, host: str = "127.0.0.1", port: int = 8765) -> tuple:
         self._host = host
@@ -197,6 +331,7 @@ class BlenderWSClient:
             self._sock = sock
             self._connected = True
             self._running = True
+            self._handler = SimpleBlenderHandler()
 
             self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
             self._recv_thread.start()
@@ -255,7 +390,6 @@ class BlenderWSClient:
             raise e
 
     def ping(self) -> Dict[str, Any]:
-        import bpy
         start = time.monotonic()
         try:
             request = {
@@ -325,43 +459,21 @@ class BlenderWSClient:
                 future.set_result(data)
 
     def _handle_action(self, msg_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        import bpy
-
-        if action == 'ping':
-            return {
-                "id": msg_id,
-                "type": "response",
-                "action": "ping",
-                "success": True,
-                "payload": {
-                    "success": True,
-                    "blender_version": bpy.app.version_string,
-                    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                    "scene_objects": len(bpy.context.scene.objects),
-                    "mode": bpy.context.mode,
-                    "message": payload.get('message', ''),
-                },
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-
-        try:
-            if self._init_handler():
-                handler_name = f"handle_{action}"
-                handler = getattr(self._handler, handler_name, None)
-                if handler and callable(handler):
-                    result = handler(payload)
-                    return {
-                        "id": msg_id,
-                        "type": "response",
-                        "action": action,
-                        "success": result.get('success', False),
-                        "payload": result,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
-        except Exception as e:
-            print(f"处理 {action} 失败: {e}")
-            import traceback
-            traceback.print_exc()
+        if self._handler:
+            try:
+                result = self._handler.handle_action(action, payload)
+                return {
+                    "id": msg_id,
+                    "type": "response",
+                    "action": action,
+                    "success": result.get('success', False),
+                    "payload": result,
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            except Exception as e:
+                print(f"处理 {action} 失败: {e}")
+                import traceback
+                traceback.print_exc()
 
         return {
             "id": msg_id,
